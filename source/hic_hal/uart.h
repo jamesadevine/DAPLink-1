@@ -74,6 +74,9 @@ typedef struct {
  *----------------------------------------------------------------------------*/
 
 /* UART driver function prototypes */
+void uart_debug(char c);
+void uart_clear_rx(void);
+
 extern int32_t uart_initialize(void);
 extern int32_t uart_uninitialize(void);
 extern int32_t uart_reset(void);

@@ -39,6 +39,7 @@
 #include "daplink.h"
 #include "util.h"
 #include "DAP.h"
+#include "jmx.h"
 
 // Event flags for main task
 // Timers events
@@ -174,6 +175,11 @@ os_mbx_declare(serial_mailbox, 20);
 #define SIZE_DATA (64)
 static uint8_t data[SIZE_DATA];
 
+extern int sync_jmx_state_track(char c);
+
+    
+extern void tx_rx_buff_write(char c);
+
 __task void serial_process()
 {
     UART_Configuration config;
@@ -186,15 +192,15 @@ __task void serial_process()
         if (os_mbx_wait(&serial_mailbox, &msg, 0) == OS_R_OK) {
             switch ((SERIAL_MSG)(unsigned)msg) {
                 case SERIAL_INITIALIZE:
-                    uart_initialize();
+                    //uart_initialize();
                     break;
 
                 case SERIAL_UNINITIALIZE:
-                    uart_uninitialize();
+                    //uart_uninitialize();
                     break;
 
                 case SERIAL_RESET:
-                    uart_reset();
+                    //uart_reset();
                     break;
 
                 case SERIAL_SET_CONFIGURATION:
@@ -214,15 +220,36 @@ __task void serial_process()
         }
 
         if (len_data) {
-            len_data = uart_read_data(data, len_data);
-        }
-
-        if (len_data) {
-            if (USBD_CDC_ACM_DataSend(data , len_data)) {
-                main_blink_cdc_led(MAIN_LED_OFF);
+            
+            char c = 0;
+            int read_count = 0;
+            
+            while(uart_read_data((uint8_t*)&c,1) && read_count < len_data)
+            {
+                //tx_rx_buff_write('U');
+                if (sync_jmx_state_track(c))
+                    data[read_count++] = c;
             }
+            
+            if(read_count)
+            {
+                if (USBD_CDC_ACM_DataSend(data , read_count)) {
+                    main_blink_cdc_led(MAIN_LED_OFF);
+                }
+            }
+//#ifdef NATIVE_FILESYSTEM
+                //data[data_offset++] = data[i];
+//#endif
+            //forward over usb
+            /*if(data_offset)
+            {
+                if (USBD_CDC_ACM_DataSend(data , data_offset)) {
+                    main_blink_cdc_led(MAIN_LED_OFF);
+                }
+            }*/
         }
 
+        //returns the number of buffered characters 
         len_data = uart_write_free();
 
         if (len_data > SIZE_DATA) {
@@ -230,10 +257,12 @@ __task void serial_process()
         }
 
         if (len_data) {
+            //read from usb
             len_data = USBD_CDC_ACM_DataRead(data, len_data);
         }
 
         if (len_data) {
+            //forward to target.
             if (uart_write_data(data, len_data)) {
                 main_blink_cdc_led(MAIN_LED_OFF);
             }
@@ -301,7 +330,7 @@ __task void main_task(void)
         }
 
         if (flags & FLAGS_MAIN_RESET) {
-            target_set_state(RESET_RUN);
+            //target_set_state(RESET_RUN);
         }
 
         if (flags & FLAGS_MAIN_POWERDOWN) {

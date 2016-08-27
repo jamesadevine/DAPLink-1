@@ -26,6 +26,7 @@
 #include "usb_for_lib.h"
 #include "util.h"
 #include "macro.h"
+#include "daplink_debug.h"
 
 BOOL USBD_MSC_MediaReady = __FALSE;
 BOOL USBD_MSC_ReadOnly = __FALSE;
@@ -173,9 +174,11 @@ BOOL USBD_MSC_CheckMedia(void)
 
 void USBD_MSC_MemoryRead(void)
 {
+    //debug_msg("0");
     U32 n, m;
 
     if (Block >= USBD_MSC_BlockCount) {
+        debug_msg("FUCK");
         n = 0;
         USBD_MSC_SetStallEP(usbd_msc_ep_bulkin | 0x80);
         USBD_MSC_CSW.bStatus = CSW_CMD_PASSED;
@@ -189,13 +192,16 @@ void USBD_MSC_MemoryRead(void)
     }
 
     if (!USBD_MSC_CheckMedia()) {
+        debug_msg("FUCK2");
         n = 0;
     }
 
     if ((Offset == 0) && (n != 0)) {
+        //debug_msg("1");
         m = (Length + (USBD_MSC_BlockSize - 1)) / USBD_MSC_BlockSize;
 
         if (m > USBD_MSC_BlockGroup) {
+            
             m = USBD_MSC_BlockGroup;
         }
 
@@ -203,19 +209,23 @@ void USBD_MSC_MemoryRead(void)
     }
 
     if (n) {
+        //debug_msg("2");
         USBD_WriteEP(usbd_msc_ep_bulkin | 0x80, &USBD_MSC_BlockBuf[Offset], n);
         Offset += n;
         Length -= n;
     }
 
     if (Offset == USBD_MSC_BlockGroup * USBD_MSC_BlockSize) {
+        //debug_msg("3");
         Offset = 0;
         Block += USBD_MSC_BlockGroup;
     }
 
     USBD_MSC_CSW.dDataResidue -= n;
 
+    //debug_msg("3");
     if (!n) {
+        //debug_msg("4");
         return;
     }
 
@@ -301,6 +311,7 @@ void USBD_MSC_MemoryWrite(void)
 
 void USBD_MSC_MemoryVerify(void)
 {
+    debug_msg("A");
     U32 n;
 
     if (Block >= USBD_MSC_BlockCount) {
@@ -311,17 +322,19 @@ void USBD_MSC_MemoryVerify(void)
     }
 
     if (!USBD_MSC_CheckMedia()) {
+        debug_msg("B");
         BulkLen = 0;
     }
 
     if (BulkLen) {
+        debug_msg("C");
         if ((Offset == 0) && (BulkLen != 0)) {
             n = (Length + (USBD_MSC_BlockSize - 1)) / USBD_MSC_BlockSize;
 
             if (n > USBD_MSC_BlockGroup) {
                 n = USBD_MSC_BlockGroup;
             }
-
+            debug_msg("D");
             usbd_msc_read_sect(Block, USBD_MSC_BlockBuf, n);
         }
 
@@ -864,6 +877,7 @@ void USBD_MSC_GetCBW(void)
                 (USBD_MSC_CBW.bCBLength <  1) ||
                 (USBD_MSC_CBW.bCBLength > 16)) {
 fail:
+                    debug_msg("FAIL.\n");
             USBD_MSC_CSW.bStatus = CSW_CMD_FAILED;
             USBD_MSC_SetCSW();
         } else {
@@ -924,10 +938,13 @@ fail:
                 case SCSI_READ10:
                 case SCSI_READ12:
                     if (USBD_MSC_RWSetup()) {
+                        debug_msg("POO\n");
                         if ((USBD_MSC_CBW.bmFlags & 0x80) != 0) {
                             BulkStage = MSC_BS_DATA_IN;
                             USBD_MSC_MemoryRead();
                         } else {                       /* direction mismatch */
+                            
+                            
                             USBD_MSC_SetStallEP(usbd_msc_ep_bulkout);
                             USBD_MSC_CSW.bStatus = CSW_PHASE_ERROR;
                             USBD_MSC_SetCSW();
@@ -993,6 +1010,7 @@ fail:
         /* set EP to stay stalled */
         USBD_EndPointStall |=  1 << usbd_msc_ep_bulkout;
         BulkStage = MSC_BS_ERROR;
+        debug_msg("FAIL1\n");
     }
 }
 

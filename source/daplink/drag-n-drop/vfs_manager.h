@@ -71,6 +71,19 @@ void vfs_user_build_filesystem(void);
 // Add board-specific functions to the VFS.
 void board_vfs_add_files(void);
 
+
+
+// Add board-specific functions to the VFS.
+int board_vfs_read(uint32_t requested_sector, uint8_t *buf, uint32_t num_sectors);
+
+int board_vfs_write(uint32_t requested_sector, uint8_t *buf, uint32_t num_sectors);
+
+// Add board-specific functions to the VFS.
+//static uint32_t board_read_subdir(uint32_t sector_offset, uint8_t *data, uint32_t num_sectors);
+
+// Add board-specific functions to the VFS.
+//static void board_write_subdir(uint32_t sector_offset, const uint8_t *data, uint32_t num_sectors);
+
 // Called when a file on the filesystem changes
 void vfs_user_file_change_handler(const vfs_filename_t filename, vfs_file_change_t change, vfs_file_t file, vfs_file_t new_file_data);
 

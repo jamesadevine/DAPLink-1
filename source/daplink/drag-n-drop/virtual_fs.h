@@ -43,6 +43,7 @@ typedef enum {
     VFS_FILE_ATTR_VOLUME_LABEL  = (1 << 3),
     VFS_FILE_ATTR_SUB_DIR       = (1 << 4),
     VFS_FILE_ATTR_ARCHIVE       = (1 << 5),
+    VFS_FILE_ATTR_LONG_NAME     = (VFS_FILE_ATTR_READ_ONLY | VFS_FILE_ATTR_HIDDEN | VFS_FILE_ATTR_SYSTEM | VFS_FILE_ATTR_VOLUME_LABEL)
 } vfs_file_attr_bit_t;
 
 typedef enum {
@@ -53,6 +54,77 @@ typedef enum {
                                   created a file changed
                                   notification will also occur*/
 } vfs_file_change_t;
+
+// Virtual file system driver
+// Limitations:
+//   - files must be contiguous
+//   - data written cannot be read back
+//   - data should only be read once
+
+typedef struct {
+    uint8_t boot_sector[11];
+    /* DOS 2.0 BPB - Bios Parameter Block, 11 bytes */
+    uint16_t bytes_per_sector;
+    uint8_t  sectors_per_cluster;
+    uint16_t reserved_logical_sectors;
+    uint8_t  num_fats;
+    uint16_t max_root_dir_entries;
+    uint16_t total_logical_sectors;
+    uint8_t  media_descriptor;
+    uint16_t logical_sectors_per_fat;
+    /* DOS 3.31 BPB - Bios Parameter Block, 12 bytes */
+    uint16_t physical_sectors_per_track;
+    uint16_t heads;
+    uint32_t hidden_sectors;
+    uint32_t big_sectors_on_drive;
+    /* Extended BIOS Parameter Block, 26 bytes */
+    uint8_t  physical_drive_number;
+    uint8_t  not_used;
+    uint8_t  boot_record_signature;
+    uint32_t volume_id;
+    char     volume_label[11];
+    char     file_system_type[8];
+    /* bootstrap data in bytes 62-509 */
+    uint8_t  bootstrap[448];
+    /* These entries in place of bootstrap code are the *nix partitions */
+    //uint8_t  partition_one[16];
+    //uint8_t  partition_two[16];
+    //uint8_t  partition_three[16];
+    //uint8_t  partition_four[16];
+    /* Mandatory value at bytes 510-511, must be 0xaa55 */
+    uint16_t signature;
+} __attribute__((packed)) mbr_t;
+
+typedef struct file_allocation_table {
+    uint8_t f[512];
+} file_allocation_table_t;
+
+typedef struct FatDirectoryEntry {
+    vfs_filename_t filename;
+    uint8_t attributes;
+    uint8_t reserved;
+    uint8_t creation_time_ms;
+    uint16_t creation_time;
+    uint16_t creation_date;
+    uint16_t accessed_date;
+    uint16_t first_cluster_high_16;
+    uint16_t modification_time;
+    uint16_t modification_date;
+    uint16_t first_cluster_low_16;
+    uint32_t filesize;
+} __attribute__((packed)) FatDirectoryEntry_t;
+
+typedef struct LongFatDirectoryEntry {
+    uint8_t order; //If masked with 0x40 (LAST_LONG_ENTRY), this indicates the entry is the last long dir entry in a set of long dir entries. All valid sets of long dir entries must begin with an entry having this mask.
+    uint16_t name1[5]; // Characters 1-5 
+    uint8_t attributes; // ATTR_LONG_NAME
+    uint8_t type; //If zero, indicates a directory entry that is a sub-component of a long name.  NOTE: Other values reserved for future extensions. Non-zero implies other dirent types.
+    uint8_t chksum;
+    uint16_t name2[6]; // chars 6-11
+    uint16_t first_cluster_low_16; // always 0
+    uint16_t name3[2]; // chars 12-13
+} __attribute__((packed)) LongFatDirectoryEntry_t;
+
 
 typedef void *vfs_file_t;
 typedef uint32_t vfs_sector_t;
@@ -73,10 +145,17 @@ void vfs_init(const vfs_filename_t drive_name, uint32_t disk_size);
 // Get the total size of the virtual filesystem
 uint32_t vfs_get_total_size(void);
 
+uint32_t vfs_get_virtual_usage(void);
+
 // Add a file to the virtual FS and return a handle to this file.
 // This must be called before vfs_read or vfs_write are called.
 // Adding a new file after vfs_read or vfs_write have been called results in undefined behavior.
 vfs_file_t vfs_create_file(const vfs_filename_t filename, vfs_read_cb_t read_cb, vfs_write_cb_t write_cb, uint32_t len);
+
+
+vfs_file_t vfs_create_subdir(const vfs_filename_t dir_name, uint32_t entries, vfs_read_cb_t read_cb, vfs_write_cb_t write_cb);
+
+uint32_t vfs_create_entry(FatDirectoryEntry_t *de, uint32_t len);
 
 // Set the attributes of a file
 void vfs_file_set_attr(vfs_file_t file, vfs_file_attr_bit_t attr);
@@ -85,6 +164,9 @@ void vfs_file_set_attr(vfs_file_t file, vfs_file_attr_bit_t attr);
 // NOTE - If the file size is 0 there is no starting
 // sector so VFS_INVALID_SECTOR will be returned.
 vfs_sector_t vfs_file_get_start_sector(vfs_file_t file);
+
+uint32_t write_clusters(uint32_t clusters_to_write);
+int get_fat_entry(uint32_t cluster);
 
 // Get the size of the file.
 uint32_t vfs_file_get_size(vfs_file_t file);
@@ -96,10 +178,10 @@ vfs_file_attr_bit_t vfs_file_get_attr(vfs_file_t file);
 void vfs_set_file_change_callback(vfs_file_change_cb_t cb);
 
 // Read one or more sectors from the virtual filesystem
-void vfs_read(uint32_t sector, uint8_t *buf, uint32_t num_of_sectors);
+int vfs_read(uint32_t sector, uint8_t *buf, uint32_t num_of_sectors);
 
 // Write one or more sectors to the virtual filesystem
-void vfs_write(uint32_t sector, const uint8_t *buf, uint32_t num_of_sectors);
+int vfs_write(uint32_t sector, const uint8_t *buf, uint32_t num_of_sectors);
 
 #ifdef __cplusplus
 }

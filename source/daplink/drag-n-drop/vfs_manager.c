@@ -274,7 +274,7 @@ void vfs_mngr_periodic(uint32_t elapsed_ms)
             break;
 
         case VFS_MNGR_STATE_CONNECTED:
-            build_filesystem();
+            //build_filesystem();
             USBD_MSC_MediaReady = 1;
             break;
     }
@@ -300,6 +300,8 @@ void usbd_msc_init(void)
 
 void usbd_msc_read_sect(uint32_t sector, uint8_t *buf, uint32_t num_of_sectors)
 {
+    debug_msg("R\n")
+    
     sync_assert_usb_thread();
 
     // dont proceed if we're not ready
@@ -309,7 +311,13 @@ void usbd_msc_read_sect(uint32_t sector, uint8_t *buf, uint32_t num_of_sectors)
 
     // indicate msc activity
     main_blink_msc_led(MAIN_LED_OFF);
+    
+#ifndef BOARD_VFS_ADD_FILES
     vfs_read(sector, buf, num_of_sectors);
+#else
+    if(vfs_read(sector, buf, num_of_sectors) == -1)
+        board_vfs_read(sector, buf, num_of_sectors);
+#endif
 }
 
 void usbd_msc_write_sect(uint32_t sector, uint8_t *buf, uint32_t num_of_sectors)
@@ -319,7 +327,6 @@ void usbd_msc_write_sect(uint32_t sector, uint8_t *buf, uint32_t num_of_sectors)
     if (!USBD_MSC_MediaReady) {
         return;
     }
-
     // Restart the disconnect counter on every packet
     // so the device does not detach in the middle of a
     // transfer.
@@ -331,8 +338,16 @@ void usbd_msc_write_sect(uint32_t sector, uint8_t *buf, uint32_t num_of_sectors)
 
     // indicate msc activity
     main_blink_msc_led(MAIN_LED_OFF);
+#ifndef BOARD_VFS_ADD_FILES
     vfs_write(sector, buf, num_of_sectors);
     file_data_handler(sector, buf, num_of_sectors);
+#else
+    if(vfs_write(sector, buf, num_of_sectors) == -1)
+        if(!board_vfs_write(sector, buf, num_of_sectors))
+            file_data_handler(sector, buf, num_of_sectors);
+#endif
+    
+    
 }
 
 static void sync_init(void)
@@ -393,7 +408,9 @@ static void file_change_handler(const vfs_filename_t filename, vfs_file_change_t
 
     if (VFS_FILE_CREATED == change) {
         stream_type_t stream;
-
+    
+        debug_msg("HERE\n");
+        
         if (STREAM_TYPE_NONE != stream_type_from_name(filename)) {
             // Check for a know file extension to detect the current file being
             // transferred.  Ignore hidden files since MAC uses hidden files with
