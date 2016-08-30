@@ -1,4 +1,4 @@
-/*const char microbit_html[] = "\n\n\
+const char microbit_html[] = "\n\n\
 <html><meta charset=\"UTF-8\">\n\
 <head>\n\
 <style type='text/css'>\n\
@@ -110,14 +110,14 @@ button, html input[type=button], input[type=reset], input[type=submit] {\n\
 @-webkit-keyframes load8 {0%{-webkit-transform: rotate(0deg);transform: rotate(0deg);}100%{-webkit-transform: rotate(360deg);transform: rotate(360deg);}}\n\
 @keyframes load8 {0%{-webkit-transform: rotate(0deg);transform: rotate(0deg);}100%{-webkit-transform: rotate(360deg);transform: rotate(360deg);}}\n\
 \n\
-/*----- Tabs -----\n\
+/*----- Tabs -----*/\n\
 .tabs {\n\
     width:100%;\n\
     display:inline-block;\n\
 }\n\
 \n\
-/*----- Tab Links -----\n\
-/* Clearfix \n\
+/*----- Tab Links -----*/\n\
+/* Clearfix */\n\
 .tab-links:after {\n\
     display:block;\n\
     clear:both;\n\
@@ -171,7 +171,7 @@ ul {\n\
     font-size:12px;\n\
     font-weight:600;\n\
     color: #4c4c4c\n\
-    /*color:#4c4c4c;\n\
+    /*color:#4c4c4c;*/\n\
 }\n\
 @media (min-width: 400px){\n\
    .tab-links a {\n\
@@ -180,7 +180,7 @@ ul {\n\
         font-size:16px;\n\
         font-weight:600;\n\
         color: #4c4c4c\n\
-        /*color:#4c4c4c;\n\
+        /*color:#4c4c4c;*/\n\
     }\n\
     ul {\n\
         display: table;\n\
@@ -202,7 +202,7 @@ li.active, li.active:hover, li.active a{\n\
     color:#337ab7;\n\
 }\n\
 \n\
-/*----- Content of Tabs -----\n\
+/*----- Content of Tabs -----*/\n\
 .tab-content {\n\
     background-color: #fff !important;\n\
     padding:3px;\n\
@@ -503,4 +503,4 @@ function buildIF(){\n\
     </div>\n\
 </body>\n\
 </html>\n\
-";*/
+";

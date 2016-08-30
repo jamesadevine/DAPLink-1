@@ -36,9 +36,7 @@
 #define PERSIST_X                   0x0003BC00
 #define PERSIST_Y                   0x0003B800
 
-//#define MICROBIT_PAGE_BUFFER_SIZE   2048
-
-static uint8_t microbit_page_buffer[MICROBIT_PAGE_BUFFER_SIZE];
+uint8_t microbit_page_buffer[MICROBIT_PAGE_BUFFER_SIZE];
 
 extern const flash_intf_t *const flash_intf_target;
 
