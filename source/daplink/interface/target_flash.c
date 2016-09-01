@@ -40,6 +40,10 @@ static error_t target_flash_erase_chip(void);
 static uint32_t target_flash_program_page_min_size(uint32_t addr);
 static uint32_t target_flash_erase_sector_size(uint32_t addr);
 
+#ifdef TARGET_FLASH_ERASE_CHIP_OVERRIDE
+error_t board_target_flash_erase_chip(void);
+#endif
+
 static const flash_intf_t flash_intf = {
     target_flash_init,
     target_flash_uninit,

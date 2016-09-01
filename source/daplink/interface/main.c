@@ -182,7 +182,7 @@ extern void tx_rx_buff_write(char c);
 
 __task void serial_process()
 {
-    UART_Configuration config;
+    /*UART_Configuration config;
     int32_t len_data = 0;
     void *msg;
 
@@ -246,8 +246,7 @@ __task void serial_process()
                 if (USBD_CDC_ACM_DataSend(data , data_offset)) {
                     main_blink_cdc_led(MAIN_LED_OFF);
                 }
-            }*/
-        }
+            }*        }
 
         //returns the number of buffered characters 
         len_data = uart_write_free();
@@ -258,7 +257,7 @@ __task void serial_process()
 
         if (len_data) {
             //read from usb
-            len_data = USBD_CDC_ACM_DataRead(data, len_data);
+           // len_data = USBD_CDC_ACM_DataRead(data, len_data);
         }
 
         if (len_data) {
@@ -267,7 +266,8 @@ __task void serial_process()
                 main_blink_cdc_led(MAIN_LED_OFF);
             }
         }
-    }
+    }*/
+    USBD_CDC_ACM_DataRead(data, SIZE_DATA);
 }
 
 extern __task void hid_process(void);

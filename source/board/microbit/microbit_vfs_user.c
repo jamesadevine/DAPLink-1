@@ -54,7 +54,7 @@
 #define TABLE_SIZE                  1024/TABLE_WIDTH
 #define FILENAME_LEN                16
 
-#define JUNK_BIT                    0x1000
+#define UNKNOWN_SIZE_BIT            0x1000
 
 static const UART_Configuration init_config = {
     .Baudrate = 115200,
@@ -93,8 +93,8 @@ static const UART_Configuration init_config = {
 // The number of key value pairs.
 #define KEY_VALUE_SIZE      21
 
-// which translates to 24 bytes of base 64
-#define MICROBIT_MTU        16 
+// which translates to ~32 bytes of base 64
+#define MICROBIT_MTU        24 
 
 // The key for the flash storage location
 #define KEY_STRING "MBFS_START"
@@ -118,7 +118,6 @@ static uint32_t microbit_flash_size = 0;
 
 static int first = 0;
 static int entries_count = 0;
-static int valid_entries = 0;
 
 static const FatDirectoryEntry_t test_file_entry = {
     /*uint8_t[11] */ .filename = {""},
@@ -137,20 +136,35 @@ static const FatDirectoryEntry_t test_file_entry = {
 
 static volatile uint8_t initialised = 0;
 static volatile uint8_t flag = 1;
+
+#define JUNK_CLUSTER_COUNT          12
+
+static uint16_t junk_clusters[JUNK_CLUSTER_COUNT] = { 0 };
+static uint8_t junk_cluster_index = 0;
+
 int print_flag = 0;
 
 typedef struct LWDirectoryEntry
 {
     uint8_t filename[16];
+    uint8_t last_char;
     uint16_t first_cluster;
     uint32_t size;
+    uint16_t last_char_count;
+    //wasting one byte...
 }LWDirectoryEntry_t;
+
+typedef struct FileTransferState
+{
+    LWDirectoryEntry_t* currentEntry;
+    uint16_t next_sector;
+}FileTransferState_t;
+
+FileTransferState_t* fts = NULL;
 
 char version[9];
 
 OS_MUT jmx_mutex;
-
-extern uint8_t microbit_page_buffer[];
 
 #ifdef __cplusplus
 extern "C" {
@@ -195,6 +209,7 @@ void jmx_packet_received(char* identifier)
 {
     flag = 0;
 }
+
 void initialise_req(void* data)
 {
     //uart_debug('R');
@@ -213,12 +228,35 @@ void initialise_req(void* data)
 
 static uint32_t read_tx_rx_buff(uint32_t sector_offset, uint8_t *data, uint32_t num_sectors)
 {
-    if(sector_offset > 0)
+#ifndef TARGET_FLASH_ERASE_CHIP_OVERRIDE
+    
+    int buffer_offset = sector_offset * VFS_SECTOR_SIZE;
+    int copy_amount = num_sectors * VFS_SECTOR_SIZE;
+    
+    if(buffer_offset >= BUFF_SIZE)
         return 0;
     
-    memcpy(data, tx_rx_buffer, tx_rx_buffer_offset);
+    memcpy(data + buffer_offset, tx_rx_buffer + buffer_offset, copy_amount);
     
-    return tx_rx_buffer_offset;
+    return copy_amount;
+#else
+    return 0;
+#endif
+}
+
+void add_junk_cluster(int cluster_number)
+{
+    junk_clusters[junk_cluster_index] = cluster_number;
+    junk_cluster_index = (junk_cluster_index + 1) % JUNK_CLUSTER_COUNT;
+}
+
+int is_junk_cluster(int cluster_number)
+{
+    for(int i = 0; i < JUNK_CLUSTER_COUNT; i++)
+        if(junk_clusters[i] == cluster_number)
+            return 1;
+        
+    return 0;
 }
 
 int wait_for_reply(int cd)
@@ -292,7 +330,9 @@ void target_get_file(char* filename, int size, int offset, FSRequestPacket* fsr)
         return;
     }
 
+    //print_flag = 1;
     jmx_send("fs", &local_fsr_send);
+    print_flag = 0;
     
     if(!wait_for_reply(10000000))
         fsr->len = -4;
@@ -339,9 +379,8 @@ void target_write_file(char* filename, int size, int offset, char* base64, FSReq
   * Requires that BOARD_VFS_ADD_FILES
   */
 void board_vfs_add_files() {
-    memset(tx_rx_buffer, 0, BUFF_SIZE);
-    
-    int cd = 10000000;
+ 
+    int cd = 2000000;
     main_blink_cdc_led(MAIN_LED_OFF);
     jmx_init();
     swd_init();
@@ -382,10 +421,17 @@ void board_vfs_add_files() {
     flag = 1;
     
     //uart_debug('I');
+    
+#ifndef TARGET_FLASH_ERASE_CHIP_OVERRIDE
+    memset(tx_rx_buffer, 0, BUFF_SIZE);
     vfs_create_file("RXTX    TXT", read_tx_rx_buff, 0, BUFF_SIZE);
+#endif   
     
     if(initialised)
     {
+        vfs_create_subdir("FILES      ", 85, board_read_subdir, board_write_subdir);
+        //created = true;
+        
         if(strncmp(version,"0.0.0",5) == 0)
         {
             if(microbit_get_flash_meta(&microbit_flash_start, &microbit_flash_size)) {
@@ -396,6 +442,8 @@ void board_vfs_add_files() {
                 int file_size = strlen(microbit_html);
                 vfs_create_file("MBITFS  HTM", read_file_microbit_htm, 0, file_size);
             } 
+            
+            initialised = 0;
         }
         else
         {
@@ -408,7 +456,7 @@ void board_vfs_add_files() {
             
             while (!done)
             {
-                target_get_entry(valid_entries, &dir);
+                target_get_entry(entries_count, &dir);
                 
                 if (dir.entry < 0)
                     done = true;
@@ -417,31 +465,37 @@ void board_vfs_add_files() {
                     if(!created)
                     {
                         // a maximum of 85 entries, allocate our cluster, add our hooks
-                        vfs_create_subdir("FILES      ", 85, board_read_subdir, board_write_subdir);
-                        created = true;
+                        //vfs_create_subdir("FILES      ", 85, board_read_subdir, board_write_subdir);
+                        //created = true;
                     }
                     
-                    //for(int i = 0; i < 16; i++)
-                    //    tx_rx_buff_write(dir.filename[i]);
-                    
+                    for(int i = 0; i < 16; i++)
+                    {
+                        
+                        tx_rx_buff_write(dir.filename[i]);
+                        tx_rx_buff_write('[');
+                        tx_rx_buff_write('0' + (((dir.filename[i])/10)%10));
+                        tx_rx_buff_write('0' + (((dir.filename[i]))%10));
+                        tx_rx_buff_write(']');
+                        if(dir.filename[i] == 0)
+                            break;
+                    }
                     LWDirectoryEntry_t lw;
                     memset(&lw, 0, sizeof(LWDirectoryEntry_t));
                     memcpy(lw.filename, dir.filename, MIN(strlen(dir.filename),16));
                     lw.size = dir.size;
                     lw.first_cluster = write_clusters((dir.size/VFS_CLUSTER_SIZE) + 1);
                     
-                    if(valid_entries == 0)
+                    if(entries_count == 0)
                         first = lw.first_cluster;
                     
                     memcpy(microbit_page_buffer + (entries_count * sizeof(LWDirectoryEntry_t)), &lw, sizeof(LWDirectoryEntry_t));
                     
                     entries_count++;
-                    valid_entries++;
                 }
             }
-            tx_rx_buff_write('0' + valid_entries);
+            tx_rx_buff_write('0' + entries_count);
         }
-        
     }
 }
 
@@ -473,35 +527,62 @@ void transform_name(char* orig, char* dest)
         orig_offset++;
     }
 
-    int prefix_len = MIN(7,dest_offset);
-        
-    memcpy(dest,orig,prefix_len);
-    if(prefix_len == 7)
-    {
-        dest[6] = '~';
-        int name_count = 0;
-        
-        // I should really compare against the transformed name, but this could take a long time...
-        // i will always end up > 1
-        for(int i = 0; i < entries_count; i++)
+    int basis_len = dest_offset;
+    
+    memcpy(dest,orig,dest_offset);
+    
+    int extension = 0;
+    
+    for(int i = 0; i < orig_len; i++)
+        if(orig[i] == '.')
         {
-            LWDirectoryEntry_t* lw = ((LWDirectoryEntry_t*)microbit_page_buffer) + i;
-            if(strncmp((char *)lw->filename,orig, MIN(orig_len,7)) == 0)
-                name_count++;
+            extension = i;
+            break;
         }
         
-        if(name_count > 9)
-            dest[5] ='~';
+    if(extension)
+    {
+        dest_offset = 8;
+        orig_offset = extension + 1;
+        while(orig_offset < orig_len && dest_offset < 11 && orig[orig_offset] != 0)
+        {
+            dest[dest_offset++] = orig[orig_offset];
+            orig_offset++;
+        }
+    }
         
-        dest[7] = '0' + (name_count % 9);
+    int name_count = 0;
+    
+    // I should really compare against the transformed name, but this could take a long time...
+    // i will always end up > 1
+    for(int i = 0; i < entries_count; i++)
+    {
+        LWDirectoryEntry_t* lw = ((LWDirectoryEntry_t*)microbit_page_buffer) + i;
+        if(strncmp((char *)lw->filename,orig, MIN(basis_len, strnlen((char*)lw->filename, 16))) == 0)
+            name_count++;
     }
     
-    memcpy(dest + 8, orig + orig_len - 3, 3);
+    if(name_count > 1)
+    {
+        dest[6] = '~';
+        if(name_count > 9)
+            dest[5] ='~';
+    
+        dest[7] = '0' + (name_count % 9);
+    }
 }
 
 int retrieve_dirent(uint32_t sector_offset, uint8_t *data, uint32_t num_sectors)
 {   
     //tx_rx_buff_write('D');
+    
+}
+
+//intercept????
+static uint32_t board_read_subdir(uint32_t sector_offset, uint8_t *data, uint32_t num_sectors){
+    //debug_msg("read %d %d\n", sector_offset, num_sectors);
+    memset(data,0,VFS_SECTOR_SIZE * num_sectors);
+    
     int size = 0;
     FatDirectoryEntry_t de;
     memcpy(&de, &test_file_entry, sizeof(FatDirectoryEntry_t));
@@ -512,13 +593,10 @@ int retrieve_dirent(uint32_t sector_offset, uint8_t *data, uint32_t num_sectors)
     
     for(int i = dir_offset; i < dir_offset + dirs_per_sector; i++)
     {
-        if(i > entries_count)
+        if(i >= entries_count)
             break;
         
         LWDirectoryEntry_t* lw = ((LWDirectoryEntry_t*)microbit_page_buffer) + i;
-        
-        if(lw->first_cluster & JUNK_BIT)
-            continue;
         
         //tx_rx_buff_write('V');
         memset(de.filename,' ',11);
@@ -539,33 +617,22 @@ int retrieve_dirent(uint32_t sector_offset, uint8_t *data, uint32_t num_sectors)
         size += sizeof(FatDirectoryEntry_t);
     }
     
-    //tx_rx_buff_write('A');
-    //debug_msg("sz %d ns %d\n", size, num_sectors);
     return size;
 }
 
-//intercept????
-static uint32_t board_read_subdir(uint32_t sector_offset, uint8_t *data, uint32_t num_sectors){
-    //debug_msg("read %d %d\n", sector_offset, num_sectors);
-    memset(data,0,VFS_SECTOR_SIZE * num_sectors);
-    return retrieve_dirent(sector_offset, data, num_sectors);
-}
-
-LWDirectoryEntry_t* getEntry(uint32_t fs_offset)
+LWDirectoryEntry_t* getEntry(uint32_t requested_cluster)
 { 
     LWDirectoryEntry_t* lw;
-    LWDirectoryEntry_t* empty = NULL;
-    
-    uint32_t requested_cluster = first + fs_offset;
+    LWDirectoryEntry_t* file_transfer = NULL;
     
     for(int i = 0; i < entries_count; i++)
     {
         lw = ((LWDirectoryEntry_t*)microbit_page_buffer) + i;
         
-        if(lw->size == 0 && !empty && !(lw->first_cluster & JUNK_BIT))
-            empty = lw;
+        if(!file_transfer && lw->first_cluster & UNKNOWN_SIZE_BIT)
+            file_transfer = lw;
         
-        uint32_t clust = lw->first_cluster & ~JUNK_BIT;
+        uint32_t clust = lw->first_cluster & ~0xF000;
         
         uint32_t last_cluster = clust + ((lw->size / VFS_CLUSTER_SIZE));
         
@@ -574,10 +641,37 @@ LWDirectoryEntry_t* getEntry(uint32_t fs_offset)
             return lw;
     }
     
-    return empty;
+    return file_transfer;
 }
 
-int board_vfs_read(uint32_t requested_sector, uint8_t *buf, uint32_t num_sectors){
+LWDirectoryEntry_t* getEntryByShortName(const char* name)
+{ 
+    LWDirectoryEntry_t* lw;
+    
+    char given_name[12];
+    memcpy(given_name, name, 11);
+    given_name[11] = 0;
+    
+    for(int i = 0; i < entries_count; i++)
+    {
+        lw = ((LWDirectoryEntry_t*)microbit_page_buffer) + i;
+        
+        char name_buf[12];
+        memset(name_buf, 0, 12);
+        
+        transform_name((char*)lw->filename,name_buf);
+        
+        if(strcmp(name_buf, given_name) == 0)
+            return lw;
+    }
+    
+    return NULL;
+}
+
+int board_vfs_read(uint32_t requested_sector, uint8_t *buf, uint32_t num_sectors)
+{    
+    if(!initialised)
+        return 0;
     
     //get the usage of the DAPLink VFS.
     uint32_t total_vfs_sectors = vfs_get_virtual_usage() / VFS_SECTOR_SIZE;
@@ -588,43 +682,48 @@ int board_vfs_read(uint32_t requested_sector, uint8_t *buf, uint32_t num_sectors
     //calculates the block offset into the file
     int microbit_block_offset = (requested_sector - total_vfs_sectors) % 8;
     
-    //if this is negative, it doesn't belong to us...
-    if(microbit_fs_off < 0)
-        return 0;
-    
     // find correct entry
-    LWDirectoryEntry_t* entry = getEntry(microbit_fs_off); 
+    LWDirectoryEntry_t* entry = getEntry(first + microbit_fs_off); 
     
     if(entry == NULL)
         return 0;
     
-    FSRequestPacket fsr;
     int bytes_read = 0;
-    int byte_offset = microbit_block_offset * VFS_SECTOR_SIZE;
+    int cluster_offset = ((first + microbit_fs_off) - entry->first_cluster) * VFS_CLUSTER_SIZE;
     
-    while((byte_offset + bytes_read) < entry->size)
+    int byte_offset = cluster_offset + (microbit_block_offset * VFS_SECTOR_SIZE);
+    int read_end = VFS_SECTOR_SIZE * num_sectors;
+    
+    while((byte_offset + bytes_read) < entry->size && bytes_read < read_end)
     {
+        FSRequestPacket fsr;
+        int desired_bytes = MIN(MICROBIT_MTU,MIN(read_end - bytes_read, entry->size - (byte_offset + bytes_read)));
+        
         tx_rx_buff_write('*');
         tx_rx_buff_write('0' + (((byte_offset + bytes_read)/100)%10));
         tx_rx_buff_write('0' + (((byte_offset + bytes_read)/10)%10));
         tx_rx_buff_write('0' + (((byte_offset + bytes_read))%10));
+        tx_rx_buff_write('/');
+        tx_rx_buff_write('0' + (((desired_bytes)/10)%10));
+        tx_rx_buff_write('0' + (((desired_bytes))%10));
         tx_rx_buff_write('*');
-        //int offset = ((byte_offset + bytes_read) == byte_offset) ? byte_offset : (byte_offset + bytes_read) - 1;
-        target_get_file((char*)entry->filename, MIN(MICROBIT_MTU, entry->size - bytes_read), (byte_offset + bytes_read), &fsr);
         
-        tx_rx_buff_write('2' + fsr.len);
+        target_get_file((char*)entry->filename, MIN(MICROBIT_MTU, desired_bytes), (byte_offset + bytes_read), &fsr);
+        
         if(fsr.len <= 0)
             break;
         
         int data_len = base64_dec_len(fsr.base64, fsr.len);
         
-        tx_rx_buff_write('@');
-        tx_rx_buff_write('0' + ((fsr.len/100)%10));
-        tx_rx_buff_write('0' + ((fsr.len/10)%10));
-        tx_rx_buff_write('0' + ((fsr.len)%10));
-        tx_rx_buff_write('@');
-    
-        base64_decode((char*)(buf + bytes_read), fsr.base64 , fsr.len); 
+        char ret_buf[data_len + 1];
+        base64_decode(ret_buf, fsr.base64 , fsr.len); 
+        
+        free(fsr.base64);
+        fsr.base64 = NULL;
+        
+        data_len = MIN(desired_bytes, data_len);
+        
+        memcpy(buf + bytes_read, ret_buf, data_len);
         
         bytes_read += data_len;
     }
@@ -633,8 +732,40 @@ int board_vfs_read(uint32_t requested_sector, uint8_t *buf, uint32_t num_sectors
     return bytes_read;
 }
 
+
+int base64_send(char* filename, uint32_t offset, uint8_t* data_raw, uint32_t data_raw_size)
+{
+    FSRequestPacket fsr;
+    
+    int data_len = base64_enc_len(data_raw_size);
+    char base_buf[data_len + 1];
+
+    memset(base_buf,0,data_len + 1);
+    base64_encode(base_buf, (char*)data_raw, data_raw_size);
+    
+    target_write_file(filename, data_len, offset, base_buf, &fsr);
+
+    int cd = 100000;
+
+    while(cd > 0)
+        cd--;
+
+    if(fsr.len < 0)
+    {
+        tx_rx_buff_write('-');
+        int pos_ret = -fsr.len;
+
+        tx_rx_buff_write('0' + ((pos_ret/100)%10));
+        tx_rx_buff_write('0' + ((pos_ret/10)%10));
+        tx_rx_buff_write('0' + ((pos_ret)%10));
+    }
+}
+
 int board_vfs_write(uint32_t requested_sector, uint8_t *buf, uint32_t num_sectors)
 {
+    if(!initialised)
+        return 0;
+    
     //get the usage of the DAPLink VFS.
     uint32_t total_vfs_sectors = vfs_get_virtual_usage() / VFS_SECTOR_SIZE;
     
@@ -644,207 +775,345 @@ int board_vfs_write(uint32_t requested_sector, uint8_t *buf, uint32_t num_sector
     //calculates the block offset into the file
     int microbit_block_offset = (requested_sector - total_vfs_sectors) % 8;
     
-    //if this is negative, it doesn't belong to us...
-    if(microbit_fs_off < 0)
+    if(is_junk_cluster(first + microbit_fs_off))
+    {
+        //tx_rx_buff_write('R');
         return 0;
-    
+    }
     // find correct entry
-    LWDirectoryEntry_t* entry = getEntry(microbit_fs_off); 
+    LWDirectoryEntry_t* entry = NULL;
+    
+    if(fts)
+    {
+        // first time processing this file transfer request.
+        if(requested_sector == fts->next_sector || fts->next_sector == 0)
+        {
+            
+            // track our sector for next time
+            fts->next_sector = requested_sector + 1;
+            entry = fts->currentEntry;
+        }
+        else if(requested_sector != fts->next_sector)
+        {
+            if(fts->currentEntry->size > 0)
+            {
+                // TODO:
+                //we should probably delete the entry as well... and decrement the entry count;
+                //re-enumerate?
+            }
+            tx_rx_buff_write('O');
+           
+            free(fts);
+            fts = NULL;
+        }
+
+        
+        tx_rx_buff_write('I');
+        if(requested_sector >= 100)
+            tx_rx_buff_write('0' + ((requested_sector/100)%10));
+        tx_rx_buff_write('0' + ((requested_sector/10)%10));
+        tx_rx_buff_write('0' + (((requested_sector))%10));
+    }
+    else
+        entry = getEntry(first + microbit_fs_off);
     
     if(entry == NULL)
     {
-        tx_rx_buff_write('J');
-        tx_rx_buff_write('0' + (((first + microbit_fs_off)/10)%10));
-        tx_rx_buff_write('0' + (((first + microbit_fs_off))%10));
-        tx_rx_buff_write('J');
-        LWDirectoryEntry_t lw;
-            
-        memset(&lw, 0, sizeof(LWDirectoryEntry_t));
-        
-        lw.size = 0;
-        lw.first_cluster = (first + microbit_fs_off) | JUNK_BIT;
-        
-        memcpy(microbit_page_buffer + (entries_count * sizeof(LWDirectoryEntry_t)), &lw, sizeof(LWDirectoryEntry_t));
-        
-        entries_count++;
+        //tx_rx_buff_write('0' + (((first + microbit_fs_off)/10)%10));
+        //tx_rx_buff_write('0' + (((first + microbit_fs_off))%10));
+        //tx_rx_buff_write('A');
+        add_junk_cluster(first + microbit_fs_off);
         return 0;
     }
     
-    if(entry->first_cluster & JUNK_BIT)
+    //if we haven't yet got a size, we also probably don't have a first_cluster...
+	if ((entry->first_cluster & ~UNKNOWN_SIZE_BIT) == 0)
     {
-        tx_rx_buff_write('R');
-        return 0;
+		entry->first_cluster = first + microbit_fs_off | UNKNOWN_SIZE_BIT;
     }
+	
+	int bytes_written = 0;
     
-    tx_rx_buff_write('O');
-    tx_rx_buff_write('0' + (((first + microbit_fs_off)/10)%10));
-    tx_rx_buff_write('0' + (((first + microbit_fs_off))%10));
-    tx_rx_buff_write('O');
+    int cluster_offset = ((first + microbit_fs_off) - entry->first_cluster) * VFS_CLUSTER_SIZE;
     
-    tx_rx_buff_write('~');
+	int byte_offset = cluster_offset + (microbit_block_offset * VFS_SECTOR_SIZE);
+	int write_end = VFS_SECTOR_SIZE * num_sectors;
+	int bytes_parsed = 0;
     
-    for(int i = 0 ; i < 16; i++)
-        tx_rx_buff_write(entry->filename[i]);
-    
-    FSRequestPacket fsr;
-    int bytes_written = 0;
-    int byte_offset = microbit_block_offset * VFS_SECTOR_SIZE;
-    
-    if(entry->size == 0)
+	if (entry->first_cluster & UNKNOWN_SIZE_BIT)
+	{
+		int write_end = VFS_SECTOR_SIZE * num_sectors;
+
+		char data_buf[MICROBIT_MTU];
+		int data_buf_offset = 0;
+		memset(data_buf, 0, MICROBIT_MTU);
+
+		while (bytes_parsed < write_end)
+		{	
+			if (entry->last_char == buf[bytes_parsed])
+			{
+				entry->last_char_count++;
+				bytes_parsed++;
+			}
+			else
+			{
+				//there's a difference, flush the last last_char_count characters.
+				while (entry->last_char_count > 0)
+				{
+					int character_count = MIN(entry->last_char_count, MICROBIT_MTU - data_buf_offset);
+
+					memset(data_buf + data_buf_offset, entry->last_char, character_count);
+
+					data_buf_offset += character_count;
+
+					// if we have filled the buffer, send it....
+					if (data_buf_offset == MICROBIT_MTU)
+					{
+
+                        base64_send((char *)entry->filename, entry->size, (uint8_t *)data_buf, data_buf_offset);
+                        
+                        bytes_written += data_buf_offset;
+                        
+                        entry->size += data_buf_offset;  
+                        
+						memset(data_buf, 0, MICROBIT_MTU);
+						data_buf_offset = 0;
+					}
+
+					entry->last_char_count -= character_count;
+				}
+
+				entry->last_char = buf[bytes_parsed++];
+				entry->last_char_count = 1;
+			}
+		}
+		
+		if (data_buf_offset > 0)
+		{
+            base64_send((char *)entry->filename, entry->size, (uint8_t *)data_buf, data_buf_offset);
+			entry->size += data_buf_offset;
+		}
+        
+        return bytes_parsed;
+	}
+    else
     {
-        for(int i = 0; i < VFS_SECTOR_SIZE; i++)
+        tx_rx_buff_write('W');
+        if(requested_sector >= 100)
+            tx_rx_buff_write('0' + ((requested_sector/100)%10));
+        tx_rx_buff_write('0' + ((requested_sector/10)%10));
+        tx_rx_buff_write('0' + (((requested_sector))%10));
+        
+        while((byte_offset + bytes_written) < entry->size && bytes_written < write_end)
         {
-            tx_rx_buff_write(buf[i]);
-            tx_rx_buff_write('[');
-            tx_rx_buff_write('0' + (((buf[i])/10)%10));
-            tx_rx_buff_write('0' + (((buf[i]))%10));
-            tx_rx_buff_write(']');
-        }
-    }  
-    
-    /*while((byte_offset + bytes_written) < entry->size)
-    {
-        int tx_size = MIN(MICROBIT_MTU, entry->size - bytes_written);
-        
-        tx_rx_buff_write('*');
-        tx_rx_buff_write('0' + (((bytes_written)/100)%10));
-        tx_rx_buff_write('0' + (((bytes_written)/10)%10));
-        tx_rx_buff_write('0' + (((bytes_written))%10));
-        tx_rx_buff_write('*');
-       
-        for(int i = bytes_written; i < bytes_written + tx_size; i++)
-            tx_rx_buff_write(buf[i]);
-        
-        int data_len = base64_enc_len(tx_size);
-        
-        tx_rx_buff_write('@');
-        tx_rx_buff_write('0' + ((tx_size/100)%10));
-        tx_rx_buff_write('0' + ((tx_size/10)%10));
-        tx_rx_buff_write('0' + ((tx_size)%10));
-        tx_rx_buff_write('@');
-    
-        char base_buf[data_len + 1];
-        
-        memset(base_buf,0,data_len + 1);
-        
-        base64_encode(base_buf, (char*)buf + bytes_written, tx_size); 
-        
-        //int offset = ((byte_offset + bytes_written) == byte_offset) ? byte_offset : (byte_offset + bytes_written) - 1;
-        target_write_file((char*)entry->filename, data_len, (byte_offset + bytes_written), base_buf, &fsr);
-        
-        int cd = 100000;
-        
-        while(cd > 0)
-            cd--;
-        
-        if(fsr.len < 0)
-        {
-            tx_rx_buff_write('-');
-            int pos_ret = -fsr.len;
+            int tx_size = MIN(MICROBIT_MTU, entry->size - bytes_written);
             
-            tx_rx_buff_write('0' + ((pos_ret/100)%10));
-            tx_rx_buff_write('0' + ((pos_ret/10)%10));
-            tx_rx_buff_write('0' + ((pos_ret)%10));
+            tx_rx_buff_write('*');
+            tx_rx_buff_write('0' + (((bytes_written)/100)%10));
+            tx_rx_buff_write('0' + (((bytes_written)/10)%10));
+            tx_rx_buff_write('0' + (((bytes_written))%10));
+            tx_rx_buff_write('*');
+           
+            for(int i = bytes_written; i < bytes_written + tx_size; i++)
+                tx_rx_buff_write(buf[i]);
+            
+            base64_send((char*) entry->filename, (byte_offset + bytes_written), buf + bytes_written, tx_size);
+            bytes_written += tx_size;
         }
         
-        bytes_written += tx_size;
-    }*/
-    
-    
-    return bytes_written;
+        return bytes_written;
+    }
 }
 
 //intercept???
 static void board_write_subdir(uint32_t sector_offset, const uint8_t *data, uint32_t num_sectors){
-    FatDirectoryEntry_t *new_entry = (FatDirectoryEntry_t *)data ;
+    FatDirectoryEntry_t *new_entry = (FatDirectoryEntry_t *)data;
    
     uint32_t dirs_per_sector = VFS_SECTOR_SIZE / sizeof(FatDirectoryEntry_t); 
-    
-    uint32_t num_entries = num_sectors * dirs_per_sector;
-    int dir_offset = dirs_per_sector * sector_offset;
-    
-    FatDirectoryEntry_t de;
-    memcpy(&de, &test_file_entry, sizeof(FatDirectoryEntry_t));
-    
-    int i = 0;
-    
-    char name[26];
-    int name_length = 0;
-    int long_entries = -1;
-    bool long_first = false;
-    for(i = dir_offset; i < num_entries; i++)
-    {
-        if(!new_entry[i].filename[0])
-            break;
-        
-        
-        
-        //LWDirectoryEntry_t* existing = (LWDirectoryEntry_t*)(microbit_page_buffer) + i;
-        
-        // this is a new entry, and it has a long filename, we skip for simplicity
-        //if(new_entry[i].attributes & VFS_FILE_ATTR_LONG_NAME)
-        //    continue;
 
-        if(new_entry[i].attributes & VFS_FILE_ATTR_LONG_NAME)
-            continue;
+    int entry_offset = dirs_per_sector * sector_offset;
+    
+    /*tx_rx_buff_write('P');
+    tx_rx_buff_write('0' + ((entry_offset / 10)%10));
+    tx_rx_buff_write('0' + ((entry_offset)%10));
+    tx_rx_buff_write('P');*/
+    
+    //if(entry_offset > entries_count)
+    //{
+        //tx_rx_buff_write('Q');    
+    //    return;
+    //}
+    
+    int validated_entries = 0;
+    
+    uint32_t num_entries = num_sectors * VFS_SECTOR_SIZE / sizeof(FatDirectoryEntry_t);
+    
+    while(entry_offset < num_entries)
+    {
+        FatDirectoryEntry_t current_entry = new_entry[entry_offset];
         
-        
-        
-        // skip until there is a new entry.
-        // this will need to be changed for deletions.
-        if(i < valid_entries-1)
-            continue;
-        
-        
-        uint32_t cluster = ((uint32_t)new_entry[i].first_cluster_high_16 << 16) |  new_entry[i].first_cluster_low_16;
-        
-        tx_rx_buff_write('0' + ((new_entry[i].filesize / 100)%10));
-        tx_rx_buff_write('0' + ((new_entry[i].filesize / 10)%10));
-        tx_rx_buff_write('0' + ((new_entry[i].filesize)%10));
-        tx_rx_buff_write('-');
-        tx_rx_buff_write('0' + ((cluster / 100)%10));
-        tx_rx_buff_write('0' + ((cluster / 10)%10));
-        tx_rx_buff_write('0' + ((cluster)%10));
-        
-        // new ,populated, directory entry.
-        //if(i >= valid_entries)
-        //{
-        for(int j = 0; j < 11; j++)
+        if(current_entry.attributes & VFS_FILE_ATTR_LONG_NAME)
         {
-            tx_rx_buff_write(new_entry[i].filename[j]);
+            tx_rx_buff_write(':');
+            entry_offset++;
+            continue;
         }
         
+        uint32_t cluster = ((uint32_t)current_entry.first_cluster_high_16 << 16) |  current_entry.first_cluster_low_16;
         
-        LWDirectoryEntry_t lw;
+        if(0xe5 == (uint8_t)current_entry.filename[0])
+        {
+            tx_rx_buff_write('D');
+            tx_rx_buff_write('0' + ((cluster / 100)%10));
+            tx_rx_buff_write('0' + ((cluster / 10)%10));
+            tx_rx_buff_write('0' + ((cluster)%10));
+            entry_offset++;
+            continue;
+        }
         
-        memset(&lw, 0, sizeof(LWDirectoryEntry_t));
+        if(!current_entry.attributes)
+        {
+            tx_rx_buff_write('@');
+            break;
+        }
+
         
-        tx_rx_buff_write('E');
-        //new SHORT dirent, capture the filename and transform it to 8-[period]-3.
-        int filename_offset = 0;
-   
         for(int j = 0; j < 11; j++)
         {
-            if(j == 8)
-                lw.filename[filename_offset++] = '.';
+            tx_rx_buff_write(current_entry.filename[j]);
+            tx_rx_buff_write('0' + ((current_entry.filename[j] / 10)%10));
+            tx_rx_buff_write('0' + ((current_entry.filename[j])%10));
+        }
+        
+        LWDirectoryEntry_t* lw = getEntryByShortName(current_entry.filename);
+        
+        // This is a new entry...
+        if(!lw)
+        {
+            tx_rx_buff_write('0' + ((current_entry.filesize / 100)%10));
+            tx_rx_buff_write('0' + ((current_entry.filesize / 10)%10));
+            tx_rx_buff_write('0' + ((current_entry.filesize)%10));
+            tx_rx_buff_write('-');
+            tx_rx_buff_write('0' + ((cluster / 100)%10));
+            tx_rx_buff_write('0' + ((cluster / 10)%10));
+            tx_rx_buff_write('0' + ((cluster)%10));
             
-            if(new_entry[i].filename[j] != ' ')
-                lw.filename[filename_offset++] = new_entry[i].filename[j];
+            LWDirectoryEntry_t new_lw;
+            
+            memset(&new_lw, 0, sizeof(LWDirectoryEntry_t));
+            
+            tx_rx_buff_write('E');
+            //new SHORT dirent, capture the filename and transform it to 8-[period]-3.
+            int filename_offset = 0;
+       
+            for(int j = 0; j < 11; j++)
+            {
+                if(current_entry.filename[j] == 0)
+                    break;
+                
+                if(j == 8 && current_entry.filename[j] != ' ')
+                    new_lw.filename[filename_offset++] = '.';
+                
+                if(current_entry.filename[j] != ' ')
+                    new_lw.filename[filename_offset++] = current_entry.filename[j];
+            }
+            
+            for(int i = 0 ; i < filename_offset; i++)
+                tx_rx_buff_write(new_lw.filename[i]);
+            
+            new_lw.size = current_entry.filesize;
+            new_lw.first_cluster = cluster;
+            
+            if(new_lw.size == 0)
+                new_lw.first_cluster |= UNKNOWN_SIZE_BIT;
+            
+            LWDirectoryEntry_t* dest = (LWDirectoryEntry_t*)(microbit_page_buffer + (entries_count * sizeof(LWDirectoryEntry_t)));
+            
+            memcpy(dest, &new_lw, sizeof(LWDirectoryEntry_t));
+            
+            // account for MACOS
+            if(!cluster)
+            {
+                //if we don't have a cluster and our file transfer state is not in progress.
+                if(!fts)
+                {
+                    fts = malloc(sizeof(FileTransferState_t));
+                    memset(fts, 0, sizeof(FileTransferState_t));
+                    
+                    fts->currentEntry = dest;
+                    fts->next_sector = 0;
+                }
+                else
+                {
+                    // blow up, File transfer in progress.
+                }
+            }
+            
+            entries_count++;
+            
+            tx_rx_buff_write('L');
         }
-      
-        for(int j = 0; j < filename_offset; j++)    
-            tx_rx_buff_write(lw.filename[j]);
-        
-        lw.size = new_entry[i].filesize;
-        lw.first_cluster = cluster;
-        
-        memcpy(microbit_page_buffer + (entries_count * sizeof(LWDirectoryEntry_t)), &lw, sizeof(LWDirectoryEntry_t));
-        
-        entries_count++;
-        valid_entries++;
-        
-        tx_rx_buff_write('L');
-        //}
+        else
+        {   
+            //if we don't know the filesize, update the filesize. That is all.
+            if(lw->first_cluster & UNKNOWN_SIZE_BIT)
+            {
+                if(current_entry.filesize)
+                {
+                    tx_rx_buff_write('U');
+                    tx_rx_buff_write('0' + ((current_entry.filesize / 100)%10));
+                    tx_rx_buff_write('0' + ((current_entry.filesize / 10)%10));
+                    tx_rx_buff_write('0' + ((current_entry.filesize)%10));
+                    tx_rx_buff_write('C');
+                    tx_rx_buff_write('0' + ((cluster / 100)%10));
+                    tx_rx_buff_write('0' + ((cluster / 10)%10));
+                    tx_rx_buff_write('0' + ((cluster)%10));
+                    
+                    // if our optimisation was too harsh, we need to write the appropriate amount bytes to the file
+                    // now we know the size...
+                    if(lw->size < current_entry.filesize)
+                    {
+                        int bytes_to_write = current_entry.filesize - lw->size;
+                        
+                        char data_buf[MICROBIT_MTU];
+                        memset(data_buf, 0, MICROBIT_MTU);
+                        
+                        while(bytes_to_write)
+                        {
+                            int chars_to_write = MIN(MICROBIT_MTU, bytes_to_write);
+                            memset(data_buf, lw->last_char, chars_to_write);
+                            
+                            base64_send((char*)lw->filename, lw->size, (uint8_t*)data_buf, chars_to_write);
+                        
+                            lw->size += chars_to_write;
+                            bytes_to_write -= chars_to_write;
+                        }
+                        
+                        lw->last_char = 0;
+                        lw->last_char_count = 0;
+                    }
+                    
+                    lw->size = current_entry.filesize;
+                    lw->first_cluster &= ~UNKNOWN_SIZE_BIT;
+                    
+                    if(fts)
+                    {
+                        free(fts);
+                        fts = NULL;
+                    }
+                }
+            }
+            // for some inconvenient reason, mac OS likes to move things around...
+            else if(lw->first_cluster != cluster)
+            {
+                lw->first_cluster = cluster;
+                tx_rx_buff_write('M');
+                tx_rx_buff_write('0' + ((cluster / 10)%10));
+                tx_rx_buff_write('0' + ((cluster)%10));
+            }
+        }
+        entry_offset++;
+        validated_entries++;
     }
 }
 

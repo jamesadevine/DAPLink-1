@@ -5,7 +5,8 @@
 #else
 #define MICROBIT_PAGE_BUFFER_SIZE   2048
 #endif
-//extern uint8_t microbit_page_buffer[MICROBIT_PAGE_BUFFER_SIZE];
+
+extern uint8_t microbit_page_buffer[MICROBIT_PAGE_BUFFER_SIZE];
 
 /**
   * Performs an in buffer reverse of a given char array.

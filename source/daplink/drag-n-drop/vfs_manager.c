@@ -93,6 +93,7 @@ typedef struct {
 } file_transfer_state_t;
 
 typedef enum {
+    VFS_MNGR_STATE_INIT,
     VFS_MNGR_STATE_DISCONNECTED,
     VFS_MNGR_STATE_RECONNECTING,
     VFS_MNGR_STATE_CONNECTED
@@ -180,7 +181,7 @@ void vfs_mngr_init(bool enable)
     build_filesystem();
 
     if (enable) {
-        vfs_state = VFS_MNGR_STATE_CONNECTED;
+        vfs_state = VFS_MNGR_STATE_INIT;
         vfs_state_next = VFS_MNGR_STATE_CONNECTED;
         USBD_MSC_MediaReady = 1;
     } else {
@@ -241,12 +242,10 @@ void vfs_mngr_periodic(uint32_t elapsed_ms)
     vfs_mngr_printf("    state %i->%i\r\n", vfs_state_local_prev, vfs_state_local);
 
     switch (vfs_state_local_prev) {
+        case VFS_MNGR_STATE_INIT:
         case VFS_MNGR_STATE_DISCONNECTED:
-            // No action needed
-            break;
-
         case VFS_MNGR_STATE_RECONNECTING:
-            // No action needed
+            
             break;
 
         case VFS_MNGR_STATE_CONNECTED:
@@ -265,16 +264,21 @@ void vfs_mngr_periodic(uint32_t elapsed_ms)
 
     // Processing when entering a state
     switch (vfs_state_local) {
+        case VFS_MNGR_STATE_INIT:
+            break;
         case VFS_MNGR_STATE_DISCONNECTED:
             USBD_MSC_MediaReady = 0;
+            
             break;
 
         case VFS_MNGR_STATE_RECONNECTING:
             USBD_MSC_MediaReady = 0;
+            //build_filesystem();
             break;
 
         case VFS_MNGR_STATE_CONNECTED:
-            //build_filesystem();
+            //if(vfs_state_local_prev != VFS_MNGR_STATE_INIT || vfs_state_local_prev != VFS_MNGR_STATE_RECONNECTING)
+                //build_filesystem();
             USBD_MSC_MediaReady = 1;
             break;
     }
@@ -345,6 +349,7 @@ void usbd_msc_write_sect(uint32_t sector, uint8_t *buf, uint32_t num_of_sectors)
     if(vfs_write(sector, buf, num_of_sectors) == -1)
         if(!board_vfs_write(sector, buf, num_of_sectors))
             file_data_handler(sector, buf, num_of_sectors);
+  
 #endif
     
     
