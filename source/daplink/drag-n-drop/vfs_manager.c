@@ -347,7 +347,7 @@ void usbd_msc_write_sect(uint32_t sector, uint8_t *buf, uint32_t num_of_sectors)
     file_data_handler(sector, buf, num_of_sectors);
 #else
     if(vfs_write(sector, buf, num_of_sectors) == -1)
-        if(!board_vfs_write(sector, buf, num_of_sectors))
+        if(board_vfs_write(sector, buf, num_of_sectors) == -1)
             file_data_handler(sector, buf, num_of_sectors);
   
 #endif
@@ -388,7 +388,11 @@ static void build_filesystem()
     vfs_user_build_filesystem();
     vfs_set_file_change_callback(file_change_handler);
     // Set mass storage parameters
+#ifdef BOARD_VFS_ADD_FILES
+    USBD_MSC_MemorySize = vfs_get_total_size() + board_get_fs_size();
+#else
     USBD_MSC_MemorySize = vfs_get_total_size();
+#endif
     USBD_MSC_BlockSize  = VFS_SECTOR_SIZE;
     USBD_MSC_BlockGroup = 1;
     USBD_MSC_BlockCount = USBD_MSC_MemorySize / USBD_MSC_BlockSize;

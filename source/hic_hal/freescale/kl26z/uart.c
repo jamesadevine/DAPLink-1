@@ -29,6 +29,8 @@
 // Size must be 2^n for using quick wrap around
 #define UART_BUFFER_SIZE (512)
 
+uint8_t tx_in_progress = 0;
+
 struct {
     uint8_t  data[UART_BUFFER_SIZE];
     volatile uint32_t idx_in;
@@ -37,11 +39,13 @@ struct {
     volatile uint32_t cnt_out;
 } write_buffer, read_buffer;
 
-void uart_debug(char c)
+void uart_clear_rx(void)
 {
-    read_buffer.data[read_buffer.idx_in++] = UART->D;
-    read_buffer.idx_in &= (UART_BUFFER_SIZE - 1);
-    read_buffer.cnt_in++;
+    memset((void *)&read_buffer, 0xBB, sizeof(read_buffer.data));
+    read_buffer.idx_in = 0;
+    read_buffer.idx_out = 0;
+    read_buffer.cnt_in = 0;
+    read_buffer.cnt_out = 0;
 }
 
 void clear_buffers(void)
@@ -56,15 +60,6 @@ void clear_buffers(void)
     write_buffer.idx_out = 0;
     write_buffer.cnt_in = 0;
     write_buffer.cnt_out = 0;
-}
-
-void uart_clear_rx(void)
-{
-    memset((void *)&read_buffer, 0xBB, sizeof(read_buffer.data));
-    read_buffer.idx_in = 0;
-    read_buffer.idx_out = 0;
-    read_buffer.cnt_in = 0;
-    read_buffer.cnt_out = 0;
 }
 
 int32_t uart_initialize(void)
@@ -127,6 +122,7 @@ int32_t uart_reset(void)
     clear_buffers();
     // disable TIE interrupt
     UART->C2 &= ~(UART_C2_TIE_MASK);
+    tx_in_progress = 0;
     // enable interrupt
     NVIC_EnableIRQ(UART_RX_TX_IRQn);
     return 1;
@@ -203,7 +199,6 @@ int32_t uart_write_data(uint8_t *data, uint16_t size)
 {
     uint32_t cnt;
     int16_t  len_in_buf;
-    cortex_int_state_t state;
 
     if (size == 0) {
         return 0;
@@ -222,12 +217,18 @@ int32_t uart_write_data(uint8_t *data, uint16_t size)
         }
     }
 
-    // Atomically enable TX
-    state = cortex_int_get_and_disable();
-    if (write_buffer.cnt_in != write_buffer.cnt_out) {
+    if (!tx_in_progress) {
+        // Wait for D register to be free
+        while (!(UART->S1 & UART_S1_TDRE_MASK));
+
+        tx_in_progress = 1;
+        // Write the first byte into D
+        UART1->D = write_buffer.data[write_buffer.idx_out++];
+        write_buffer.idx_out &= (UART_BUFFER_SIZE - 1);
+        write_buffer.cnt_out++;
+        // enable TX interrupt
         UART->C2 |= UART_C2_TIE_MASK;
     }
-    cortex_int_restore(state);
 
     return cnt;
 }
@@ -262,27 +263,20 @@ void UART_RX_TX_IRQHandler(void)
     volatile uint8_t errorData;
     // read interrupt status
     s1 = UART->S1;
-    // mask off interrupts that are not enabled
-    if (!(UART->C2 & UART_C2_RIE_MASK)) {
-        s1 &= ~UART_S1_RDRF_MASK;
-    }
-    if (!(UART->C2 & UART_C2_TIE_MASK)) {
-        s1 &= ~UART_S1_TDRE_MASK;
-    }
 
     // handle character to transmit
-    if (s1 & UART_S1_TDRE_MASK) {
-        // Assert that there is data in the buffer
-        util_assert(write_buffer.cnt_in != write_buffer.cnt_out);
-        // Send out data
-        UART->D = write_buffer.data[write_buffer.idx_out++];
-        write_buffer.idx_out &= (UART_BUFFER_SIZE - 1);
-        write_buffer.cnt_out++;
-        // Turn off the transmitter if that was the last byte
-        if (write_buffer.cnt_in == write_buffer.cnt_out) {
-            // disable TIE interrupt
-            UART->C2 &= ~(UART_C2_TIE_MASK);
+    if (write_buffer.cnt_in != write_buffer.cnt_out) {
+        // if TDRE is empty
+        if (s1 & UART_S1_TDRE_MASK) {
+            UART->D = write_buffer.data[write_buffer.idx_out++];
+            write_buffer.idx_out &= (UART_BUFFER_SIZE - 1);
+            write_buffer.cnt_out++;
+            tx_in_progress = 1;
         }
+    } else {
+        // disable TIE interrupt
+        UART->C2 &= ~(UART_C2_TIE_MASK);
+        tx_in_progress = 0;
     }
 
     // handle received character

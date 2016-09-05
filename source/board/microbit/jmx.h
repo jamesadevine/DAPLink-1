@@ -87,6 +87,11 @@ void jmx_init(void);
 int jmx_parse(char c);
 
 /**
+  * Returns the previous char, captured by jmx.
+  */
+char jmx_previous();
+
+/**
   *	Accepts a single character and updates the state of this instance of JMX parser, and also maintains a "serial_state" varaible
   *
   *	@param c the character to process

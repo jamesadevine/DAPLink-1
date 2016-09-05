@@ -77,6 +77,11 @@ __inline int jmx_get_table_entry_index(char* packet_identifier, int identifier_l
 	return STATUS_ERROR;
 }
 
+char jmx_previous()
+{
+	return previous;
+}
+
 
 void jmx_send_string(char* identifier)
 {
@@ -140,7 +145,7 @@ int jmx_send(char* identifier, void* data)
 				char result[MAX_JSON_NUMBER];
 				int16_t number;
 				memcpy(&number, content, sizeof(int16_t));
-				itoa(number, result);
+				itoa(number, result);//, 10);//, MAX_JSON_NUMBER, 10);
 
 				for (uint8_t j = 0; j < strlen(result); j++)
 					user_putc(result[j]);
@@ -532,7 +537,7 @@ int jmx_parse(char c)
 		if (jmx_parser_state & P_STATE_KEY && jmx_key_offset < KEY_BUFFER_SIZE)
 			jmx_key_buffer[jmx_key_offset++] = c;
 		else if (jmx_parser_state & P_STATE_VALUE && jmx_data_offset < jmx_data_size)
-			jmx_data_buffer[jmx_data_offset++] = c;
+				jmx_data_buffer[jmx_data_offset++] = c;
 	}
 	else if (jmx_token_state & T_STATE_NUMBER && (IS_DIGIT(c) || (c == '-' && jmx_data_offset == 0)) && jmx_parser_state & P_STATE_VALUE)
 	{
@@ -544,6 +549,12 @@ int jmx_parse(char c)
 
 	return STATUS_OK;
 }
+
+//TODO: handle non alphanumeric values in fields... REJECT
+//TODO: validate T_STATE_DYNAMIC_STRING free's
+//TODO: verify trimming of longer than expected fields (including the NULL terminator!!!)
+//TODO: increase itoa buffer size... will fail if offset/size > 16 bit int
+
 
 /**
   *	Accepts a single character and updates the state of this instance of JMX parser, and also maintains a "serial_state" varaible
@@ -557,14 +568,6 @@ int jmx_state_track(char c)
 	if (!(jmx_state & J_STATE_INIT))
 		return 1;
 
-	if (serial_state == STATE_ERROR)
-	{
-		if (c == JMX_ESCAPE_CHAR)
-			serial_state = STATE_IDLE;
-
-		return 0; // TODO change to return...?
-	}
-
 	if (c == JMX_ESCAPE_CHAR || serial_state == STATE_PROCESSING)
 	{
 		int ret = jmx_parse(c);
@@ -573,27 +576,19 @@ int jmx_state_track(char c)
 		if (ret == STATUS_OK && serial_state != STATE_PROCESSING)
 			serial_state = STATE_PROCESSING;
 
-		// if we have an error, enter the error state, and blow out the rest of the packet...
-		if (ret == STATUS_ERROR)
-		{
-			if (c == JMX_ESCAPE_CHAR)
-				serial_state = STATE_IDLE;
-			else
-				serial_state = STATE_ERROR;
-		}
-
-		//if we have detected a slip escape sequence, exit our processing state, and forward on the escape sequence
-		if (ret == STATUS_SLIP_ESC)
+		// we have detected a slip escape sequence, or an error has occurred, tell 
+		// the client app send the previous char as well as the given one
+		if (ret == STATUS_SLIP_ESC || ret == STATUS_ERROR)
 		{
 			serial_state = STATE_IDLE;
-			return 1;
+			return 2;
 		}
 
-		// the parser has signified the end of a packet
+		// the parser has signified the end of a packet, or an error has occurred.
 		if (ret == STATUS_SUCCESS)
 			serial_state = STATE_IDLE;
-        
-        return 0;
+
+		return 0;
 	}
 
 	return 1;

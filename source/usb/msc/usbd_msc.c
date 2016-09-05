@@ -178,7 +178,6 @@ void USBD_MSC_MemoryRead(void)
     U32 n, m;
 
     if (Block >= USBD_MSC_BlockCount) {
-        debug_msg("FUCK");
         n = 0;
         USBD_MSC_SetStallEP(usbd_msc_ep_bulkin | 0x80);
         USBD_MSC_CSW.bStatus = CSW_CMD_PASSED;
@@ -192,12 +191,10 @@ void USBD_MSC_MemoryRead(void)
     }
 
     if (!USBD_MSC_CheckMedia()) {
-        debug_msg("FUCK2");
         n = 0;
     }
 
     if ((Offset == 0) && (n != 0)) {
-        //debug_msg("1");
         m = (Length + (USBD_MSC_BlockSize - 1)) / USBD_MSC_BlockSize;
 
         if (m > USBD_MSC_BlockGroup) {
@@ -209,23 +206,19 @@ void USBD_MSC_MemoryRead(void)
     }
 
     if (n) {
-        //debug_msg("2");
         USBD_WriteEP(usbd_msc_ep_bulkin | 0x80, &USBD_MSC_BlockBuf[Offset], n);
         Offset += n;
         Length -= n;
     }
 
     if (Offset == USBD_MSC_BlockGroup * USBD_MSC_BlockSize) {
-        //debug_msg("3");
         Offset = 0;
         Block += USBD_MSC_BlockGroup;
     }
 
     USBD_MSC_CSW.dDataResidue -= n;
 
-    //debug_msg("3");
     if (!n) {
-        //debug_msg("4");
         return;
     }
 
@@ -311,7 +304,6 @@ void USBD_MSC_MemoryWrite(void)
 
 void USBD_MSC_MemoryVerify(void)
 {
-    debug_msg("A");
     U32 n;
 
     if (Block >= USBD_MSC_BlockCount) {
@@ -322,19 +314,16 @@ void USBD_MSC_MemoryVerify(void)
     }
 
     if (!USBD_MSC_CheckMedia()) {
-        debug_msg("B");
         BulkLen = 0;
     }
 
     if (BulkLen) {
-        debug_msg("C");
         if ((Offset == 0) && (BulkLen != 0)) {
             n = (Length + (USBD_MSC_BlockSize - 1)) / USBD_MSC_BlockSize;
 
             if (n > USBD_MSC_BlockGroup) {
                 n = USBD_MSC_BlockGroup;
             }
-            debug_msg("D");
             usbd_msc_read_sect(Block, USBD_MSC_BlockBuf, n);
         }
 

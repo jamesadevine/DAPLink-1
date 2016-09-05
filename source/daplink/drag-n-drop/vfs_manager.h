@@ -77,6 +77,7 @@ void board_vfs_add_files(void);
 int board_vfs_read(uint32_t requested_sector, uint8_t *buf, uint32_t num_sectors);
 
 int board_vfs_write(uint32_t requested_sector, uint8_t *buf, uint32_t num_sectors);
+int board_get_fs_size();
 
 // Add board-specific functions to the VFS.
 //static uint32_t board_read_subdir(uint32_t sector_offset, uint8_t *data, uint32_t num_sectors);

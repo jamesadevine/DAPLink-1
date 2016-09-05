@@ -172,7 +172,7 @@ extern "C" {
     
 #ifndef TARGET_FLASH_ERASE_CHIP_OVERRIDE
     
-#define BUFF_SIZE 1024
+#define BUFF_SIZE 512
     
 static char tx_rx_buffer[BUFF_SIZE];
 static int tx_rx_buffer_offset = 0;
@@ -305,71 +305,150 @@ void target_get_entry(int entry, DIRRequestPacket* dir)
 	flag = 1;
 }
 
-void target_get_file(char* filename, int size, int offset, FSRequestPacket* fsr)
+void jmx_file_request(char* filename, int size, int offset, char mode)
 {
-	FSRequestPacket local_fsr_send;
-    
-    memset(&local_fsr_send, 0, sizeof(FSRequestPacket));
-
-    for(int i = 0; i <  strnlen(filename, 16); i++)
-        tx_rx_buff_write(filename[i]);
-    
-	memcpy(local_fsr_send.filename, filename, strnlen(filename, 16));
-	strcpy(local_fsr_send.mode, "read");
-	strcpy(local_fsr_send.format, "B64");
-	local_fsr_send.offset = offset;
-	local_fsr_send.len = size;
-	local_fsr_send.base64 = NULL;
-
-    //configure the FS packet buffer to point to the user given buffer
-	int ret = jmx_configure_buffer("fs", fsr);
-	
-    if(ret < 0)
-	{
-        fsr->len = ret;
-        return;
-    }
-
-    //print_flag = 1;
-    jmx_send("fs", &local_fsr_send);
-    print_flag = 0;
-    
-    if(!wait_for_reply(10000000))
-        fsr->len = -4;
-    
-	flag = 1;
-}
-
-void target_write_file(char* filename, int size, int offset, char* base64, FSRequestPacket* fsr)
-{
-	FSRequestPacket local_fsr_send;
+    FSRequestPacket local_fsr_send;
     
     memset(&local_fsr_send,0,sizeof(FSRequestPacket));
 
 	memcpy(local_fsr_send.filename,filename, strnlen(filename, 16));
-	strcpy(local_fsr_send.mode, "w");
-	strcpy(local_fsr_send.format, "B64");
+    
+    char mode_formatted[2] = {mode,0};
+	strcpy(local_fsr_send.mode, mode_formatted);
+	strcpy(local_fsr_send.format, "BIN");
 	local_fsr_send.offset = offset;
 	local_fsr_send.len = size;
-	local_fsr_send.base64 = base64;
-
-    //configure the FS packet buffer to point to the user given buffer
-	int ret = jmx_configure_buffer("fs", fsr);
-	
-    if(ret < 0)
-	{
-        fsr->len = ret;
-        return;
-    }
+	local_fsr_send.base64 = NULL;
     
-    //print_flag = 1;
     jmx_send("fs", &local_fsr_send);
     print_flag = 0;
+}
+
+int target_get_file(char* filename, int size, int offset, uint8_t* buf)
+{
+	jmx_file_request(filename, size, offset,'r');
     
-    if(!wait_for_reply(10000000))
-        fsr->len = -4;
+    uint32_t byte_count = 0;
     
-	flag = 1;
+    while(byte_count < size)
+    {
+        uint8_t data;
+        
+        while(!uart_read_data(&data,1));
+        
+        buf[byte_count++] = data;
+    }
+}
+
+
+
+int target_write_buf(char* filename, int size, int offset, uint8_t* buf)
+{
+	jmx_file_request(filename,size,offset,'w');
+    
+    uint8_t tx_buf[20];
+    uint8_t tx_buf_offset = 0;
+    
+    uint8_t flow = 0;
+    uint8_t ready = 0;
+    
+    uint32_t byte_count = 0;
+
+    while (!ready)
+    {   
+        if(uart_read_data(&flow,1))
+            if (flow == 'O')
+                ready = 1;
+    }
+    
+    while(byte_count < size)
+    {
+        
+        int tx_size = MIN(16, size - byte_count);
+        
+        memset(tx_buf,0,20);
+        
+        uint32_t *checksum = (uint32_t *)&tx_buf[16];
+        
+        for(int i = 0; i < tx_size; i++)
+        {
+            tx_buf[i] = *(buf + byte_count + i);
+            *checksum += tx_buf[i];
+        }
+        
+        uart_write_data(tx_buf, 20);
+        
+        ready = 0;
+        
+        while (!ready)
+        {
+            if(uart_read_data(&flow,1))
+                if (flow == 'O' || flow == 'R' || flow == 'D')
+                    ready = 1;
+        }
+        
+        if(flow == 'O')
+            byte_count += tx_size;
+        
+        if(flow == 'D')
+            break;
+    }
+
+    return byte_count;
+}
+
+int target_write_byte(char* filename, int size, int offset, uint8_t byte)
+{
+    jmx_file_request(filename,size,offset,'w');
+    
+    uint8_t tx_buf[20];
+    uint8_t tx_buf_offset = 0;
+    
+    memset(tx_buf, byte, 16);
+    
+    uint32_t *checksum = (uint32_t *)&tx_buf[16];
+    
+    *checksum = 0;
+    
+    for(int i = 0; i < 16; i++)
+        *checksum += tx_buf[i];
+    
+    uint8_t flow = 0;
+    uint8_t ready = 0;
+    
+    uint32_t byte_count = 0;
+
+    while (!ready)
+    {   
+        if(uart_read_data(&flow,1))
+            if (flow == 'O')
+                ready = 1;
+    }
+    
+    while(byte_count < size)
+    {
+        
+        int tx_size = MIN(16, size - byte_count);
+        
+        uart_write_data(tx_buf, 20);
+        
+        ready = 0;
+        
+        while (!ready)
+        {
+            if(uart_read_data(&flow,1))
+                if (flow == 'O' || flow == 'R' || flow == 'D')
+                    ready = 1;
+        }
+        
+        if(flow == 'O')
+            byte_count += tx_size;
+        
+        if(flow == 'D')
+            break;
+    }
+    
+    return byte_count;
 }
 
 /**
@@ -429,8 +508,6 @@ void board_vfs_add_files() {
     
     if(initialised)
     {
-        vfs_create_subdir("FILES      ", 85, board_read_subdir, board_write_subdir);
-        //created = true;
         
         if(strncmp(version,"0.0.0",5) == 0)
         {
@@ -448,10 +525,12 @@ void board_vfs_add_files() {
         else
         {
             memset(microbit_page_buffer, 0, MICROBIT_PAGE_BUFFER_SIZE);
+            
+            // a maximum of 85 entries, allocate our cluster, add our hooks
+            vfs_create_subdir("FILES      ", 85, board_read_subdir, board_write_subdir);
             //uart_debug('P');
             DIRRequestPacket dir;
             
-            bool created = false;
             bool done = false;
             
             while (!done)
@@ -462,24 +541,6 @@ void board_vfs_add_files() {
                     done = true;
                 else
                 {
-                    if(!created)
-                    {
-                        // a maximum of 85 entries, allocate our cluster, add our hooks
-                        //vfs_create_subdir("FILES      ", 85, board_read_subdir, board_write_subdir);
-                        //created = true;
-                    }
-                    
-                    for(int i = 0; i < 16; i++)
-                    {
-                        
-                        tx_rx_buff_write(dir.filename[i]);
-                        tx_rx_buff_write('[');
-                        tx_rx_buff_write('0' + (((dir.filename[i])/10)%10));
-                        tx_rx_buff_write('0' + (((dir.filename[i]))%10));
-                        tx_rx_buff_write(']');
-                        if(dir.filename[i] == 0)
-                            break;
-                    }
                     LWDirectoryEntry_t lw;
                     memset(&lw, 0, sizeof(LWDirectoryEntry_t));
                     memcpy(lw.filename, dir.filename, MIN(strlen(dir.filename),16));
@@ -572,13 +633,6 @@ void transform_name(char* orig, char* dest)
     }
 }
 
-int retrieve_dirent(uint32_t sector_offset, uint8_t *data, uint32_t num_sectors)
-{   
-    //tx_rx_buff_write('D');
-    
-}
-
-//intercept????
 static uint32_t board_read_subdir(uint32_t sector_offset, uint8_t *data, uint32_t num_sectors){
     //debug_msg("read %d %d\n", sector_offset, num_sectors);
     memset(data,0,VFS_SECTOR_SIZE * num_sectors);
@@ -668,6 +722,13 @@ LWDirectoryEntry_t* getEntryByShortName(const char* name)
     return NULL;
 }
 
+int board_get_fs_size()
+{
+    //for(int i = 0; i < entries_count; i++)
+        
+    return 64000;
+}
+
 int board_vfs_read(uint32_t requested_sector, uint8_t *buf, uint32_t num_sectors)
 {    
     if(!initialised)
@@ -692,79 +753,22 @@ int board_vfs_read(uint32_t requested_sector, uint8_t *buf, uint32_t num_sectors
     int cluster_offset = ((first + microbit_fs_off) - entry->first_cluster) * VFS_CLUSTER_SIZE;
     
     int byte_offset = cluster_offset + (microbit_block_offset * VFS_SECTOR_SIZE);
+    
+    if(byte_offset > entry->size)
+        return 0;
+    
     int read_end = VFS_SECTOR_SIZE * num_sectors;
     
-    while((byte_offset + bytes_read) < entry->size && bytes_read < read_end)
-    {
-        FSRequestPacket fsr;
-        int desired_bytes = MIN(MICROBIT_MTU,MIN(read_end - bytes_read, entry->size - (byte_offset + bytes_read)));
-        
-        tx_rx_buff_write('*');
-        tx_rx_buff_write('0' + (((byte_offset + bytes_read)/100)%10));
-        tx_rx_buff_write('0' + (((byte_offset + bytes_read)/10)%10));
-        tx_rx_buff_write('0' + (((byte_offset + bytes_read))%10));
-        tx_rx_buff_write('/');
-        tx_rx_buff_write('0' + (((desired_bytes)/10)%10));
-        tx_rx_buff_write('0' + (((desired_bytes))%10));
-        tx_rx_buff_write('*');
-        
-        target_get_file((char*)entry->filename, MIN(MICROBIT_MTU, desired_bytes), (byte_offset + bytes_read), &fsr);
-        
-        if(fsr.len <= 0)
-            break;
-        
-        int data_len = base64_dec_len(fsr.base64, fsr.len);
-        
-        char ret_buf[data_len + 1];
-        base64_decode(ret_buf, fsr.base64 , fsr.len); 
-        
-        free(fsr.base64);
-        fsr.base64 = NULL;
-        
-        data_len = MIN(desired_bytes, data_len);
-        
-        memcpy(buf + bytes_read, ret_buf, data_len);
-        
-        bytes_read += data_len;
-    }
-    
-    
-    return bytes_read;
-}
+    //a small optimisation to read only what is recorded...
+    int size = MIN(entry->size - (byte_offset + bytes_read), read_end);
 
-
-int base64_send(char* filename, uint32_t offset, uint8_t* data_raw, uint32_t data_raw_size)
-{
-    FSRequestPacket fsr;
-    
-    int data_len = base64_enc_len(data_raw_size);
-    char base_buf[data_len + 1];
-
-    memset(base_buf,0,data_len + 1);
-    base64_encode(base_buf, (char*)data_raw, data_raw_size);
-    
-    target_write_file(filename, data_len, offset, base_buf, &fsr);
-
-    int cd = 100000;
-
-    while(cd > 0)
-        cd--;
-
-    if(fsr.len < 0)
-    {
-        tx_rx_buff_write('-');
-        int pos_ret = -fsr.len;
-
-        tx_rx_buff_write('0' + ((pos_ret/100)%10));
-        tx_rx_buff_write('0' + ((pos_ret/10)%10));
-        tx_rx_buff_write('0' + ((pos_ret)%10));
-    }
+    return target_get_file((char *)entry->filename, size, byte_offset, buf);
 }
 
 int board_vfs_write(uint32_t requested_sector, uint8_t *buf, uint32_t num_sectors)
 {
     if(!initialised)
-        return 0;
+        return -1;
     
     //get the usage of the DAPLink VFS.
     uint32_t total_vfs_sectors = vfs_get_virtual_usage() / VFS_SECTOR_SIZE;
@@ -778,7 +782,7 @@ int board_vfs_write(uint32_t requested_sector, uint8_t *buf, uint32_t num_sector
     if(is_junk_cluster(first + microbit_fs_off))
     {
         //tx_rx_buff_write('R');
-        return 0;
+        return -1;
     }
     // find correct entry
     LWDirectoryEntry_t* entry = NULL;
@@ -788,7 +792,6 @@ int board_vfs_write(uint32_t requested_sector, uint8_t *buf, uint32_t num_sector
         // first time processing this file transfer request.
         if(requested_sector == fts->next_sector || fts->next_sector == 0)
         {
-            
             // track our sector for next time
             fts->next_sector = requested_sector + 1;
             entry = fts->currentEntry;
@@ -823,33 +826,47 @@ int board_vfs_write(uint32_t requested_sector, uint8_t *buf, uint32_t num_sector
         //tx_rx_buff_write('0' + (((first + microbit_fs_off))%10));
         //tx_rx_buff_write('A');
         add_junk_cluster(first + microbit_fs_off);
-        return 0;
+        return -1;
     }
     
     //if we haven't yet got a size, we also probably don't have a first_cluster...
 	if ((entry->first_cluster & ~UNKNOWN_SIZE_BIT) == 0)
-    {
 		entry->first_cluster = first + microbit_fs_off | UNKNOWN_SIZE_BIT;
-    }
 	
 	int bytes_written = 0;
-    
     int cluster_offset = ((first + microbit_fs_off) - entry->first_cluster) * VFS_CLUSTER_SIZE;
-    
-	int byte_offset = cluster_offset + (microbit_block_offset * VFS_SECTOR_SIZE);
+    int byte_offset = cluster_offset + (microbit_block_offset * VFS_SECTOR_SIZE);
+
 	int write_end = VFS_SECTOR_SIZE * num_sectors;
 	int bytes_parsed = 0;
     
+    uint8_t tx_buf[20];
+    uint8_t tx_buf_offset = 0;
+    
+    uint8_t flow = 0;
+    uint8_t ready = 0;
+    
+    
 	if (entry->first_cluster & UNKNOWN_SIZE_BIT)
 	{
-		int write_end = VFS_SECTOR_SIZE * num_sectors;
-
-		char data_buf[MICROBIT_MTU];
-		int data_buf_offset = 0;
-		memset(data_buf, 0, MICROBIT_MTU);
-
+        uint32_t valid_bytes = 0;
+        
+        //preserve our previous char, and counter for the future.
+        uint8_t previous_char = entry->last_char;
+        uint32_t previous_char_count = entry->last_char_count;
+        
+        int valid_start = -1;
+        
+        //set our count to zero, so we can get an accurate count of the characters in this sector only...
+        entry->last_char_count = 0;
+        
+        // parse the sector
+        // for each byte:
+            // compare it to the previous, if it is different, change the last char, increment valid_bytes by the last_char_count;
+            // if it is the same, increment last_char_count
+            //increment bytes_parsed
 		while (bytes_parsed < write_end)
-		{	
+		{
 			if (entry->last_char == buf[bytes_parsed])
 			{
 				entry->last_char_count++;
@@ -857,44 +874,26 @@ int board_vfs_write(uint32_t requested_sector, uint8_t *buf, uint32_t num_sector
 			}
 			else
 			{
-				//there's a difference, flush the last last_char_count characters.
-				while (entry->last_char_count > 0)
-				{
-					int character_count = MIN(entry->last_char_count, MICROBIT_MTU - data_buf_offset);
-
-					memset(data_buf + data_buf_offset, entry->last_char, character_count);
-
-					data_buf_offset += character_count;
-
-					// if we have filled the buffer, send it....
-					if (data_buf_offset == MICROBIT_MTU)
-					{
-
-                        base64_send((char *)entry->filename, entry->size, (uint8_t *)data_buf, data_buf_offset);
-                        
-                        bytes_written += data_buf_offset;
-                        
-                        entry->size += data_buf_offset;  
-                        
-						memset(data_buf, 0, MICROBIT_MTU);
-						data_buf_offset = 0;
-					}
-
-					entry->last_char_count -= character_count;
-				}
-
+                if(valid_start == -1)
+                    valid_start = bytes_parsed;
+                
+                valid_bytes += entry->last_char_count;
 				entry->last_char = buf[bytes_parsed++];
 				entry->last_char_count = 1;
 			}
 		}
-		
-		if (data_buf_offset > 0)
-		{
-            base64_send((char *)entry->filename, entry->size, (uint8_t *)data_buf, data_buf_offset);
-			entry->size += data_buf_offset;
-		}
         
-        return bytes_parsed;
+        // if this sector has different bytes in it, we can assume it's valid, write our previous n characters, and this sector's valid bytes.
+        if(valid_bytes > 0)
+        {
+            entry->size += target_write_byte((char*)entry->filename, previous_char_count, entry->size, previous_char);
+            entry->size += target_write_buf((char*)entry->filename, valid_bytes, entry->size, buf + valid_start);
+        }
+        else
+            // add our previous character count back on...
+            entry->last_char_count += previous_char_count;
+        
+        return valid_bytes + previous_char_count;
 	}
     else
     {
@@ -904,24 +903,10 @@ int board_vfs_write(uint32_t requested_sector, uint8_t *buf, uint32_t num_sector
         tx_rx_buff_write('0' + ((requested_sector/10)%10));
         tx_rx_buff_write('0' + (((requested_sector))%10));
         
-        while((byte_offset + bytes_written) < entry->size && bytes_written < write_end)
-        {
-            int tx_size = MIN(MICROBIT_MTU, entry->size - bytes_written);
-            
-            tx_rx_buff_write('*');
-            tx_rx_buff_write('0' + (((bytes_written)/100)%10));
-            tx_rx_buff_write('0' + (((bytes_written)/10)%10));
-            tx_rx_buff_write('0' + (((bytes_written))%10));
-            tx_rx_buff_write('*');
-           
-            for(int i = bytes_written; i < bytes_written + tx_size; i++)
-                tx_rx_buff_write(buf[i]);
-            
-            base64_send((char*) entry->filename, (byte_offset + bytes_written), buf + bytes_written, tx_size);
-            bytes_written += tx_size;
-        }
         
-        return bytes_written;
+        int size = MIN(entry->size - (byte_offset + bytes_written), write_end);
+        
+        return target_write_buf((char*) entry->filename, size, byte_offset, buf);
     }
 }
 
@@ -1027,9 +1012,9 @@ static void board_write_subdir(uint32_t sector_offset, const uint8_t *data, uint
             if(new_lw.size == 0)
                 new_lw.first_cluster |= UNKNOWN_SIZE_BIT;
             
-            LWDirectoryEntry_t* dest = (LWDirectoryEntry_t*)(microbit_page_buffer + (entries_count * sizeof(LWDirectoryEntry_t)));
+            LWDirectoryEntry_t* dest = ((LWDirectoryEntry_t*)microbit_page_buffer) + entries_count;
             
-            memcpy(dest, &new_lw, sizeof(LWDirectoryEntry_t));
+            *dest = new_lw;
             
             // account for MACOS
             if(!cluster)
@@ -1045,7 +1030,7 @@ static void board_write_subdir(uint32_t sector_offset, const uint8_t *data, uint
                 }
                 else
                 {
-                    // blow up, File transfer in progress.
+                    // blow up, file transfer in progress, we can't handle simulataneous writes of unknown sizes.
                 }
             }
             
@@ -1069,32 +1054,22 @@ static void board_write_subdir(uint32_t sector_offset, const uint8_t *data, uint
                     tx_rx_buff_write('0' + ((cluster / 10)%10));
                     tx_rx_buff_write('0' + ((cluster)%10));
                     
+                    lw->first_cluster &= ~UNKNOWN_SIZE_BIT;
+                    
                     // if our optimisation was too harsh, we need to write the appropriate amount bytes to the file
                     // now we know the size...
-                    if(lw->size < current_entry.filesize)
+                    
+                    // if we have buffered some characters, and we have received the first cluster...
+                    if(lw->size < current_entry.filesize && lw->last_char_count > 0 && lw->first_cluster > 0)
                     {
-                        int bytes_to_write = current_entry.filesize - lw->size;
-                        
-                        char data_buf[MICROBIT_MTU];
-                        memset(data_buf, 0, MICROBIT_MTU);
-                        
-                        while(bytes_to_write)
-                        {
-                            int chars_to_write = MIN(MICROBIT_MTU, bytes_to_write);
-                            memset(data_buf, lw->last_char, chars_to_write);
-                            
-                            base64_send((char*)lw->filename, lw->size, (uint8_t*)data_buf, chars_to_write);
-                        
-                            lw->size += chars_to_write;
-                            bytes_to_write -= chars_to_write;
-                        }
+                        //write the remaining bytes.
+                        target_write_byte((char*)lw->filename,lw->last_char_count, lw->size, lw->last_char);
                         
                         lw->last_char = 0;
                         lw->last_char_count = 0;
                     }
                     
                     lw->size = current_entry.filesize;
-                    lw->first_cluster &= ~UNKNOWN_SIZE_BIT;
                     
                     if(fts)
                     {
