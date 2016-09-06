@@ -199,6 +199,9 @@ void vfs_mngr_periodic(uint32_t elapsed_ms)
     sync_assert_usb_thread();
     sync_lock();
 
+    if(board_vfs_remount_req())
+        vfs_mngr_fs_remount();
+    
     // Return immediately if the desired state has been reached
     if (!changing_state()) {
         sync_unlock();
@@ -268,17 +271,14 @@ void vfs_mngr_periodic(uint32_t elapsed_ms)
             break;
         case VFS_MNGR_STATE_DISCONNECTED:
             USBD_MSC_MediaReady = 0;
-            //build_filesystem();
             break;
 
         case VFS_MNGR_STATE_RECONNECTING:
             USBD_MSC_MediaReady = 0;
-            //build_filesystem();
             break;
 
         case VFS_MNGR_STATE_CONNECTED:
-            //if(vfs_state_local_prev != VFS_MNGR_STATE_INIT)
-                build_filesystem();
+            build_filesystem();
             USBD_MSC_MediaReady = 1;
             break;
     }
@@ -339,6 +339,7 @@ void usbd_msc_write_sect(uint32_t sector, uint8_t *buf, uint32_t num_of_sectors)
     time_usb_idle = 0;
 
     if (TRASNFER_FINISHED == file_transfer_state.transfer_state) {
+        board_vfs_reset();
         return;
     }
 
@@ -350,7 +351,12 @@ void usbd_msc_write_sect(uint32_t sector, uint8_t *buf, uint32_t num_of_sectors)
 #else
     // if we have a file transfer in progress, why send it through the extended file system?
     if(file_transfer_state.stream_started)
+    {
         file_data_handler(sector, buf, num_of_sectors);
+    
+        if(TRASNFER_FINISHED == file_transfer_state.transfer_state)
+            board_vfs_reset();
+    }
     else if(vfs_write(sector, buf, num_of_sectors) == -1)
     {
         // try this write through our file system, if it doesn't take, pass it through to the stream.
@@ -395,7 +401,7 @@ static void build_filesystem()
     vfs_set_file_change_callback(file_change_handler);
     // Set mass storage parameters
 #ifdef BOARD_VFS_ADD_FILES
-    USBD_MSC_MemorySize = vfs_get_total_size() + board_get_fs_size();
+    USBD_MSC_MemorySize = vfs_get_total_size() + board_vfs_get_size();
 #else
     USBD_MSC_MemorySize = vfs_get_total_size();
 #endif

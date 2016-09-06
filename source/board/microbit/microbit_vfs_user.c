@@ -106,6 +106,7 @@ static const UART_Configuration init_config = {
 
 // Read functions for the MicroBit VFS.
 static uint32_t read_microbit_flash_bin(uint32_t sector_offset, uint8_t* data, uint32_t num_sectors);
+static uint32_t read_file_fs_error(uint32_t sector, uint8_t *data, uint32_t n);
 static uint32_t read_microbit_flash_js(uint32_t sector_offset, uint8_t* data, uint32_t num_sectors);
 static uint32_t read_file_microbit_htm(uint32_t sector, uint8_t *data, uint32_t n);
 static uint32_t board_read_subdir(uint32_t sector_offset, uint8_t *data, uint32_t num_sectors);
@@ -138,19 +139,34 @@ static const FatDirectoryEntry_t test_file_entry = {
     /*uint32_t*/ .filesize = 0x00000000
 };
 
-#define JMX_STATUS_PACKET   0x01
-#define JMX_INIT_PACKET     0x02
-#define JMX_DIR_PACKET      0x04
+#define JMX_STATUS_PACKET           0x01
+#define JMX_INIT_PACKET             0x02
+#define JMX_DIR_PACKET              0x04
 
-static volatile uint8_t initialised = 0;
-static volatile uint8_t jmx_flag = 0;
+#define BOARD_VFS_STATE_BOOT        0x01
+#define BOARD_VFS_STATE_INVALID     0x02
+#define BOARD_VFS_STATE_FLASH       0x04
+#define BOARD_VFS_STATE_INIT        0x08
+
+#define BOARD_VFS_ERROR_IDX_MAC     1
+#define BOARD_VFS_ERROR_IDX_DEL     2
+#define BOARD_VFS_ERROR_IDX_FULL    3
+#define BOARD_VFS_ERROR_IDX_CONF    4
+
+static uint8_t board_vfs_state = BOARD_VFS_STATE_BOOT;
+
+static const char* microbit_board_errors[4] = {
+    "Oops, I can't support multiple writes from Mac OS :(",
+    "Deleting and creating new files is too much... I CAN'T HANDLE IT! :(",
+    "Uh oh, I'm too full.",
+    "I don't what was wrong with me, am I better now? :O"
+};
+static uint8_t jmx_flag = 0;
 
 #define JUNK_CLUSTER_COUNT          12
 
 static uint16_t junk_clusters[JUNK_CLUSTER_COUNT] = { 0 };
 static uint8_t junk_cluster_index = 0;
-
-int print_flag = 0;
 
 typedef struct LWDirectoryEntry
 {
@@ -209,10 +225,7 @@ int sync_jmx_state_track(char c)
 }
 
 void user_putc(char c)
-{
-    if(print_flag)
-        tx_rx_buff_write(c);
-    
+{   
     uart_write_data((uint8_t*)&c,1);
 }    
 
@@ -220,9 +233,6 @@ void jmx_packet_received(char* identifier)
 {
     if(strcmp(identifier, "status") == 0)
         jmx_flag |= JMX_STATUS_PACKET;
-    
-    if(strcmp(identifier, "init") == 0)
-        jmx_flag |= JMX_INIT_PACKET;
     
     if(strcmp(identifier, "dir") == 0)
         jmx_flag |= JMX_DIR_PACKET;
@@ -236,9 +246,12 @@ void initialise_req(void* data)
     
     if(p->enable)
     {
-        initialised = 1;
+        board_vfs_state |= BOARD_VFS_STATE_INIT;
         memcpy(version, p->v, 9);
-    }
+    }else
+        board_vfs_state &= ~BOARD_VFS_STATE_INIT;
+    
+    jmx_flag |= JMX_INIT_PACKET;
 }
 #ifdef __cplusplus
 }
@@ -277,6 +290,12 @@ int is_junk_cluster(int cluster_number)
     return 0;
 }
 
+void reset_junk_clusters(void)
+{
+    for(int i = 0; i < JUNK_CLUSTER_COUNT; i++)
+        junk_clusters[i] = 0;
+}
+
 int wait_for_reply(int cd, uint8_t bit)
 { 
     uint8_t c = 0;
@@ -297,30 +316,6 @@ int wait_for_reply(int cd, uint8_t bit)
     return 1;
 }
 
-void target_get_entry(int entry, DIRRequestPacket* dir)
-{
-    
-    uart_clear_rx();
-    //setup the packet
-    DIRRequestPacket local_dir_send;
-	memset(&local_dir_send, 0, sizeof(local_dir_send));
-	local_dir_send.entry = entry;
-    
-	//configure the FS packet buffer to point to the user given buffer
-	int ret = jmx_configure_buffer("dir", dir);
-	
-    if(ret < 0)
-	{
-        dir->entry = ret;
-        return;
-    }
-
-    jmx_send("dir", &local_dir_send);
-    
-    if(!wait_for_reply(10000000, JMX_DIR_PACKET))
-        dir->entry = -4;
-}
-
 int usb_block()
 {
     OS_RESULT r = os_evt_wait_or(FLAGS_JMX_PACKET, 1000);
@@ -328,12 +323,12 @@ int usb_block()
     if(r == OS_R_TMO)    
        return 0;
     
-    os_evt_clr(FLAGS_JMX_PACKET, main_task_id);
     return 1;
 }
 
 void usb_resume()
 {
+    os_evt_clr(FLAGS_JMX_PACKET, main_task_id);
     os_evt_set(FLAGS_JMX_DONE, serial_task_id);
 }
 
@@ -427,7 +422,12 @@ int target_write_buf(char* filename, int size, int offset, uint8_t* buf)
             uart_write_data(tx_buf, 20);
             
             if(!wait_for_reply(10000000, JMX_STATUS_PACKET) || status.code < MICROBIT_JMX_REPEAT)
+            {
+                board_vfs_state |= (BOARD_VFS_ERROR_IDX_FULL << 4);
+                board_vfs_state |= BOARD_VFS_STATE_INVALID;
+                board_vfs_state |= BOARD_VFS_STATE_BOOT;
                 break;
+            }
             
             if(status.code == MICROBIT_JMX_SUCCESS)
                 byte_count += tx_size;
@@ -475,7 +475,12 @@ int target_write_byte(char* filename, int size, int offset, uint8_t byte)
             uart_write_data(tx_buf, 20);
             
             if(!wait_for_reply(10000000, JMX_STATUS_PACKET) || status.code < MICROBIT_JMX_REPEAT)
+            {
+                board_vfs_state |= (BOARD_VFS_ERROR_IDX_FULL << 4);
+                board_vfs_state |= BOARD_VFS_STATE_INVALID;
+                board_vfs_state |= BOARD_VFS_STATE_BOOT;
                 break;
+            }
             
             if(status.code == MICROBIT_JMX_SUCCESS)
                 byte_count += tx_size;
@@ -487,25 +492,82 @@ int target_write_byte(char* filename, int size, int offset, uint8_t byte)
     return byte_count;
 }
 
-/**
-  * called in vfs_user.c: vfs_build().
-  *
-  * Adds the files specific to the microbit.
-  * Requires that BOARD_VFS_ADD_FILES
-  */
-void board_vfs_add_files() {
- 
-    int cd = 2000000;
+void target_get_entry(int entry, DIRRequestPacket* dir, bool aquire_usb)
+{
+    //setup the packet
+    DIRRequestPacket local_dir_send;
+	memset(&local_dir_send, 0, sizeof(local_dir_send));
+	local_dir_send.entry = entry;
     
-    main_blink_cdc_led(MAIN_LED_OFF);
+	//configure the FS packet buffer to point to the user given buffer
+	int ret = jmx_configure_buffer("dir", dir);
+	
+    if(ret < 0)
+	{
+        dir->entry = ret;
+        return;
+    }
+
+    jmx_send("dir", &local_dir_send);
     
+    dir->entry = -4;
+    
+    if(aquire_usb)
+        usb_block();
+
+    wait_for_reply(10000000, JMX_DIR_PACKET);
+}
+
+void ls(bool usb_aquire)
+{
+    memset(microbit_page_buffer, 0, MICROBIT_PAGE_BUFFER_SIZE);
+            
+    // a maximum of 85 entries, allocate our cluster, add our hooks
+    vfs_create_subdir("FILES      ", 85, board_read_subdir, board_write_subdir);
+    //uart_debug('P');
+    DIRRequestPacket dir;
+    
+    bool done = false;
+    
+    while (!done)
+    {
+        target_get_entry(entries_count, &dir, usb_aquire);
+        
+        if (dir.entry < 0)
+            done = true;
+        else
+        {
+            LWDirectoryEntry_t lw;
+            memset(&lw, 0, sizeof(LWDirectoryEntry_t));
+            memcpy(lw.filename, dir.filename, MIN(strlen(dir.filename),16));
+            lw.size = dir.size;
+            lw.first_cluster = write_clusters((dir.size/VFS_CLUSTER_SIZE) + 1);
+            
+            if(entries_count == 0)
+                first = lw.first_cluster;
+            
+            memcpy(microbit_page_buffer + (entries_count * sizeof(LWDirectoryEntry_t)), &lw, sizeof(LWDirectoryEntry_t));
+            
+            entries_count++;
+        }
+        
+        if(usb_aquire)
+            usb_resume();
+    }
+    
+    
+}
+
+void sync_init()
+{
     jmx_init();
     swd_init();
     
     //initialise our mutex, incase our thread is paged out.
     os_mut_init(&jmx_mutex);
     
-    initialised = 0;
+    //reset our state bits, but not our error indicator.
+    board_vfs_state &= ~0x0F;
     entries_count = 0;
     
     //reset the microbit, setup the initalisation of UART
@@ -516,42 +578,55 @@ void board_vfs_add_files() {
     target_set_state(RESET_RUN);
     swd_off();
     
-    
-    
-    
-    //tx_rx_buff_write('S');
-    
-    main_blink_cdc_led(MAIN_LED_FLASH);
-    
-    // wait for our init packet, if any.
-    while(cd > 0 && !initialised)
-    {
-        
-        uint8_t c[2] = { 0, 0};
-        int res = uart_read_data(c,1);
-        //uart_debug(c);
-        if(res == 1)
-        {
-            //if this returns one, we break, jmx should not be used.
-            if(sync_jmx_state_track(c[0]) > 0)
-                break;
-        }
-        
-        cd--;
-    }
-    
     main_blink_cdc_led(MAIN_LED_OFF);
-    
-    //uart_debug('I');
     
 #ifndef TARGET_FLASH_ERASE_CHIP_OVERRIDE
     memset(tx_rx_buffer, 0, BUFF_SIZE);
     vfs_create_file("RXTX    TXT", read_tx_rx_buff, 0, BUFF_SIZE);
 #endif   
+}
+
+/**
+  * called in vfs_user.c: vfs_build().
+  *
+  * Adds the files specific to the microbit.
+  * Requires that BOARD_VFS_ADD_FILES
+  */
+void board_vfs_add_files() {
+    main_blink_cdc_led(MAIN_LED_OFF);
     
-    if(initialised)
+    bool first_init = false;
+    
+    // this is the first entrance, we have to reset the target, and synchronously read.
+    if(board_vfs_state & BOARD_VFS_STATE_BOOT)
     {
+        sync_init();
+        first_init = true;
+    }
+    
+    if(!(board_vfs_state & BOARD_VFS_STATE_INVALID))
+        wait_for_reply(2000000, JMX_INIT_PACKET);
+    else
+    {
+        entries_count = 0;
+        reset_junk_clusters();
         
+        uint8_t error_index = (board_vfs_state & 0xF0) >> 4;
+        
+        if(error_index > 0)
+        {
+            //account for zero based indexing...
+            error_index--;
+            
+            vfs_create_file("FS_ERRORTXT", read_file_fs_error, 0, strlen(microbit_board_errors[error_index]));
+        }
+        
+        //we could plug in an FS_ERROR TXT in here...
+    }
+    
+    
+    if(board_vfs_state & BOARD_VFS_STATE_INIT && !first_init)
+    {
         if(strncmp(version,"0.0.0",5) == 0)
         {
             if(microbit_get_flash_meta(&microbit_flash_start, &microbit_flash_size)) {
@@ -563,44 +638,18 @@ void board_vfs_add_files() {
                 vfs_create_file("MBITFS  HTM", read_file_microbit_htm, 0, file_size);
             } 
             
-            initialised = 0;
+            board_vfs_state &= ~BOARD_VFS_STATE_INIT;
         }
         else
-        {
-            memset(microbit_page_buffer, 0, MICROBIT_PAGE_BUFFER_SIZE);
-            
-            // a maximum of 85 entries, allocate our cluster, add our hooks
-            vfs_create_subdir("FILES      ", 85, board_read_subdir, board_write_subdir);
-            //uart_debug('P');
-            DIRRequestPacket dir;
-            
-            bool done = false;
-            
-            while (!done)
-            {
-                target_get_entry(entries_count, &dir);
-                
-                if (dir.entry < 0)
-                    done = true;
-                else
-                {
-                    LWDirectoryEntry_t lw;
-                    memset(&lw, 0, sizeof(LWDirectoryEntry_t));
-                    memcpy(lw.filename, dir.filename, MIN(strlen(dir.filename),16));
-                    lw.size = dir.size;
-                    lw.first_cluster = write_clusters((dir.size/VFS_CLUSTER_SIZE) + 1);
-                    
-                    if(entries_count == 0)
-                        first = lw.first_cluster;
-                    
-                    memcpy(microbit_page_buffer + (entries_count * sizeof(LWDirectoryEntry_t)), &lw, sizeof(LWDirectoryEntry_t));
-                    
-                    entries_count++;
-                }
-            }
-            tx_rx_buff_write('0' + entries_count);
-        }
+            ls(board_vfs_state & BOARD_VFS_STATE_INVALID);
     }
+    
+    //if this is false, and our state is valid, we've come here through jmx init being digested in the usb serial thread.
+    if(!first_init && !(board_vfs_state & BOARD_VFS_STATE_INVALID))
+        usb_resume();
+    
+    // reset our state indicators
+    board_vfs_state &= ~(BOARD_VFS_STATE_INVALID | BOARD_VFS_STATE_FLASH);
 }
 
 /*
@@ -705,7 +754,7 @@ static uint32_t board_read_subdir(uint32_t sector_offset, uint8_t *data, uint32_
         
         de.filesize = lw->size;
             
-        uint32_t cluster = (uint32_t)lw->first_cluster;
+        uint32_t cluster = (uint32_t)lw->first_cluster & ~0xF000;
             
         de.first_cluster_high_16 = cluster >> 16;
         de.first_cluster_low_16 = cluster >> 0;
@@ -782,16 +831,35 @@ int countDeletedEntries()
     return deleted_count;
 }
 
-int board_get_fs_size()
+
+
+int board_vfs_get_size(void)
 {
     //for(int i = 0; i < entries_count; i++)
         
     return 64000;
 }
 
+
+
+void board_vfs_reset(void)
+{
+    board_vfs_state &= ~BOARD_VFS_STATE_INIT;
+    board_vfs_state |= BOARD_VFS_STATE_FLASH;
+    board_vfs_state &= ~0x0F;
+    entries_count = 0;
+    
+    reset_junk_clusters();
+}
+
+int board_vfs_remount_req(void)
+{
+    return (board_vfs_state & BOARD_VFS_STATE_INVALID);
+}
+
 int board_vfs_read(uint32_t requested_sector, uint8_t *buf, uint32_t num_sectors)
 {    
-    if(!initialised)
+    if(!(board_vfs_state & BOARD_VFS_STATE_INIT) || board_vfs_state & BOARD_VFS_STATE_INVALID)
         return 0;
     
     //get the usage of the DAPLink VFS.
@@ -830,7 +898,7 @@ int board_vfs_read(uint32_t requested_sector, uint8_t *buf, uint32_t num_sectors
 
 int board_vfs_write(uint32_t requested_sector, uint8_t *buf, uint32_t num_sectors)
 {
-    if(!initialised)
+    if(!(board_vfs_state & BOARD_VFS_STATE_INIT) || board_vfs_state & BOARD_VFS_STATE_INVALID)
         return -1;
     
     //get the usage of the DAPLink VFS.
@@ -863,12 +931,12 @@ int board_vfs_write(uint32_t requested_sector, uint8_t *buf, uint32_t num_sector
         {
             if(fts->currentEntry->size > 0)
             {
-                // TODO:
-                //we should probably delete the entry as well... and decrement the entry count;
-                //re-enumerate?
+                board_vfs_state |= (BOARD_VFS_ERROR_IDX_CONF << 4);
+                board_vfs_state |= BOARD_VFS_STATE_INVALID;
             }
             tx_rx_buff_write('O');
            
+            entry = NULL;
             free(fts);
             fts = NULL;
         }
@@ -892,14 +960,21 @@ int board_vfs_write(uint32_t requested_sector, uint8_t *buf, uint32_t num_sector
         return -1;
     }
     
-    // we are receiving writes for a deleted file, something has gone wrong...
-    if(entry->first_cluster & FILE_DELETED_BIT)
-        vfs_mngr_fs_remount();
+    // we are receiving writes for a deleted file, or we are receiving writes after a file has been deleted, something has gone wrong...
+    if(entry->first_cluster & FILE_DELETED_BIT || countDeletedEntries() > 0)
+    {
+        board_vfs_state |= (BOARD_VFS_ERROR_IDX_DEL << 4);
+        board_vfs_state |= BOARD_VFS_STATE_INVALID;
+        return -1;
+    }
     
     //if we haven't yet got a size, we also probably don't have a first_cluster...
 	if ((entry->first_cluster & ~0xF000) == 0)
-		entry->first_cluster |= (first + microbit_fs_off  | UNKNOWN_SIZE_BIT);
-	
+    {
+        uint32_t flags = (entry->first_cluster & 0xF000) | UNKNOWN_SIZE_BIT;
+		entry->first_cluster = (first + microbit_fs_off) | flags;
+	}
+    
 	int bytes_written = 0;
     int cluster_offset = ((first + microbit_fs_off) - entry->first_cluster) * VFS_CLUSTER_SIZE;
     int byte_offset = cluster_offset + (microbit_block_offset * VFS_SECTOR_SIZE);
@@ -977,7 +1052,6 @@ int board_vfs_write(uint32_t requested_sector, uint8_t *buf, uint32_t num_sector
     }
 }
 
-//intercept???
 static void board_write_subdir(uint32_t sector_offset, const uint8_t *data, uint32_t num_sectors){
     FatDirectoryEntry_t *new_entry = (FatDirectoryEntry_t *)data;
    
@@ -995,7 +1069,6 @@ static void board_write_subdir(uint32_t sector_offset, const uint8_t *data, uint
         
         if(current_entry.attributes & VFS_FILE_ATTR_LONG_NAME)
         {
-            tx_rx_buff_write(':');
             entry_offset++;
             continue;
         }
@@ -1012,8 +1085,9 @@ static void board_write_subdir(uint32_t sector_offset, const uint8_t *data, uint
             {
                 int ret = jmx_file_request((char *)lw->filename, 0, 0, 'd');
                 
-                if(ret == MICROBIT_JMX_SUCCESS)
-                    lw->first_cluster |= FILE_DELETED_BIT;
+                lw->first_cluster |= FILE_DELETED_BIT;
+                
+                usb_resume();
             }
             
             entry_offset++;
@@ -1095,7 +1169,7 @@ static void board_write_subdir(uint32_t sector_offset, const uint8_t *data, uint
                 }
                 else
                     // blow up, file transfer in progress, we can't handle simulataneous writes of unknown sizes.
-                    vfs_mngr_fs_remount();
+                    board_vfs_state |= BOARD_VFS_STATE_INVALID;
             }
             
             entries_count++;
@@ -1105,7 +1179,8 @@ static void board_write_subdir(uint32_t sector_offset, const uint8_t *data, uint
         else if(deleted_count > 0)
         {
             //remount... the user has deleted a file, and added a new one, it destroys our calculations and assumptions.
-            vfs_mngr_fs_remount();
+            board_vfs_state |= (BOARD_VFS_ERROR_IDX_DEL << 4);
+            board_vfs_state |= BOARD_VFS_STATE_INVALID;
         }
         else
         {   
@@ -1129,7 +1204,7 @@ static void board_write_subdir(uint32_t sector_offset, const uint8_t *data, uint
                     // now we know the size...
                     
                     // if we have buffered some characters, and we have received the first cluster...
-                    if(lw->size < current_entry.filesize && lw->last_char_count > 0 && lw->first_cluster > 0)
+                    if(lw->size < current_entry.filesize && lw->last_char_count > 0 && (lw->first_cluster & ~0xF000) > 0)
                     {
                         //write the remaining bytes.
                         target_write_byte((char*)lw->filename,lw->last_char_count, lw->size, lw->last_char);
@@ -1150,7 +1225,8 @@ static void board_write_subdir(uint32_t sector_offset, const uint8_t *data, uint
             else if(lw->first_cluster & FILE_DELETED_BIT)
             {
                 //remount, the user has tried to delete and add a file...
-                vfs_mngr_fs_remount();
+                board_vfs_state |= (BOARD_VFS_ERROR_IDX_DEL << 4);
+                board_vfs_state |= BOARD_VFS_STATE_INVALID;
             }
             // for some inconvenient reason, mac OS likes to move things around...
             else if(lw->first_cluster != cluster)
@@ -1166,6 +1242,24 @@ static void board_write_subdir(uint32_t sector_offset, const uint8_t *data, uint
     }
 }
 
+
+static uint32_t read_file_fs_error(uint32_t sector, uint8_t *data, uint32_t n)
+{
+    uint8_t error_index = (board_vfs_state & 0xF0) >> 4;
+        
+    if(error_index == 0 || sector > 0)
+        return 0;
+    
+    //account for zero based indexing...
+    error_index--;
+    
+    //return one sector only...
+    int len = MIN(strlen(microbit_board_errors[error_index]), VFS_SECTOR_SIZE);
+    
+    memcpy(data, microbit_board_errors[error_index], len);
+    
+    return len;
+}
 /**
   * Function to initialize the microbit_flash_start and microbit_flash_size internal variables.
   * These must be set before any other functions can be called.
