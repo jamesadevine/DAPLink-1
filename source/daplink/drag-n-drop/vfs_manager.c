@@ -268,7 +268,7 @@ void vfs_mngr_periodic(uint32_t elapsed_ms)
             break;
         case VFS_MNGR_STATE_DISCONNECTED:
             USBD_MSC_MediaReady = 0;
-            
+            //build_filesystem();
             break;
 
         case VFS_MNGR_STATE_RECONNECTING:
@@ -277,8 +277,8 @@ void vfs_mngr_periodic(uint32_t elapsed_ms)
             break;
 
         case VFS_MNGR_STATE_CONNECTED:
-            //if(vfs_state_local_prev != VFS_MNGR_STATE_INIT || vfs_state_local_prev != VFS_MNGR_STATE_RECONNECTING)
-                //build_filesystem();
+            //if(vfs_state_local_prev != VFS_MNGR_STATE_INIT)
+                build_filesystem();
             USBD_MSC_MediaReady = 1;
             break;
     }
@@ -319,7 +319,9 @@ void usbd_msc_read_sect(uint32_t sector, uint8_t *buf, uint32_t num_of_sectors)
 #ifndef BOARD_VFS_ADD_FILES
     vfs_read(sector, buf, num_of_sectors);
 #else
-    if(vfs_read(sector, buf, num_of_sectors) == -1)
+    
+    // we shouldn't get any read requests during a stream, but just incase, prevent that.
+    if(vfs_read(sector, buf, num_of_sectors) == -1 && !file_transfer_state.stream_started)
         board_vfs_read(sector, buf, num_of_sectors);
 #endif
 }
@@ -346,13 +348,17 @@ void usbd_msc_write_sect(uint32_t sector, uint8_t *buf, uint32_t num_of_sectors)
     vfs_write(sector, buf, num_of_sectors);
     file_data_handler(sector, buf, num_of_sectors);
 #else
-    if(vfs_write(sector, buf, num_of_sectors) == -1)
+    // if we have a file transfer in progress, why send it through the extended file system?
+    if(file_transfer_state.stream_started)
+        file_data_handler(sector, buf, num_of_sectors);
+    else if(vfs_write(sector, buf, num_of_sectors) == -1)
+    {
+        // try this write through our file system, if it doesn't take, pass it through to the stream.
         if(board_vfs_write(sector, buf, num_of_sectors) == -1)
             file_data_handler(sector, buf, num_of_sectors);
-  
+    }
+        
 #endif
-    
-    
 }
 
 static void sync_init(void)
@@ -417,8 +423,6 @@ static void file_change_handler(const vfs_filename_t filename, vfs_file_change_t
 
     if (VFS_FILE_CREATED == change) {
         stream_type_t stream;
-    
-        debug_msg("HERE\n");
         
         if (STREAM_TYPE_NONE != stream_type_from_name(filename)) {
             // Check for a know file extension to detect the current file being
