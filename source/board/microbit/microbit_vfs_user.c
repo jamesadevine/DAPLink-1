@@ -148,7 +148,7 @@ static const FatDirectoryEntry_t test_file_entry = {
 #define BOARD_VFS_STATE_FLASH       0x04
 #define BOARD_VFS_STATE_INIT        0x08
 
-#define BOARD_VFS_ERROR_IDX_MAC     1
+#define BOARD_VFS_ERROR_IDX_MULTI   1
 #define BOARD_VFS_ERROR_IDX_DEL     2
 #define BOARD_VFS_ERROR_IDX_FULL    3
 #define BOARD_VFS_ERROR_IDX_CONF    4
@@ -156,7 +156,7 @@ static const FatDirectoryEntry_t test_file_entry = {
 static uint8_t board_vfs_state = BOARD_VFS_STATE_BOOT;
 
 static const char* microbit_board_errors[4] = {
-    "Oops, I can't support multiple writes from Mac OS :(",
+    "Oops, I can't support multiple writes from your machine :(",
     "Deleting and creating new files is too much... I CAN'T HANDLE IT! :(",
     "Uh oh, I'm too full.",
     "I don't what was wrong with me, am I better now? :O"
@@ -1168,10 +1168,15 @@ static void board_write_subdir(uint32_t sector_offset, const uint8_t *data, uint
                     fts->next_sector = 0;
                 }
                 else
+                {
                     // blow up, file transfer in progress, we can't handle simulataneous writes of unknown sizes.
+                    board_vfs_state |= (BOARD_VFS_ERROR_IDX_MULTI << 4);
                     board_vfs_state |= BOARD_VFS_STATE_INVALID;
+                    
+                    free(fts);
+                    fts = NULL;
+                }
             }
-            
             entries_count++;
             
             tx_rx_buff_write('L');
