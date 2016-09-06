@@ -233,6 +233,14 @@ int32_t uart_write_data(uint8_t *data, uint16_t size)
     return cnt;
 }
 
+int32_t uart_read_next(void)
+{
+    if (read_buffer.cnt_in != read_buffer.cnt_out)
+        return read_buffer.data[read_buffer.idx_out];
+
+    return 0;
+}
+
 int32_t uart_read_data(uint8_t *data, uint16_t size)
 {
     uint32_t cnt;

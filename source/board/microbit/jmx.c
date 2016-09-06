@@ -561,7 +561,8 @@ int jmx_parse(char c)
   *
   *	@param c the character to process
   *
-  * @return 0 if the parser consumed the character, 1 if it cannot.
+  * @return -1 if the parser consumed the character, 0 if the parser has validated a packet, 1 indicates that the given character should be forwarded
+  *			2 indicates that the previous character, and the given character should be forwarded.
   */
 int jmx_state_track(char c)
 {
@@ -586,9 +587,12 @@ int jmx_state_track(char c)
 
 		// the parser has signified the end of a packet, or an error has occurred.
 		if (ret == STATUS_SUCCESS)
+		{
 			serial_state = STATE_IDLE;
+			return 0;
+		}
 
-		return 0;
+		return -1;
 	}
 
 	return 1;

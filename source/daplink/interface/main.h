@@ -27,6 +27,33 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+    
+// Event flags for main task
+// Timers events
+#define FLAGS_MAIN_90MS         (1 << 0)
+#define FLAGS_MAIN_30MS         (1 << 1)
+// Reset events
+#define FLAGS_MAIN_RESET        (1 << 2)
+// Other Events
+#define FLAGS_MAIN_POWERDOWN    (1 << 4)
+#define FLAGS_MAIN_DISABLEDEBUG (1 << 5)
+#define FLAGS_MAIN_PROC_USB     (1 << 9)
+
+#define FLAGS_JMX_PACKET        (1 << 10)
+#define FLAGS_JMX_DONE          (1 << 11)
+
+
+// Used by msd when flashing a new binary
+#define FLAGS_LED_BLINK_30MS    (1 << 6)
+// Timing constants (in 90mS ticks)
+// USB busy time
+#define USB_BUSY_TIME           (33)
+// Delay before a USB device connect may occur
+#define USB_CONNECT_DELAY       (11)
+// Delay before target may be taken out of reset or reprogrammed after startup
+#define STARTUP_DELAY           (1)
+// Decrement to zero
+#define DECZERO(x)              (x ? --x : 0)
 
 // LED state
 typedef enum main_led_state {

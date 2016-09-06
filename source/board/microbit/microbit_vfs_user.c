@@ -64,7 +64,9 @@ static const UART_Configuration init_config = {
     .FlowControl = UART_FLOW_CONTROL_NONE
 };
 
-
+#define MICROBIT_JMX_SUCCESS        1
+#define MICROBIT_JMX_REPEAT         0
+#define MICROBIT_JMX_ERROR          -1
 /**
   * Micro:Bit specific VFS files:
   *  - MBITFS.HTM filesystem webpage interface.
@@ -134,8 +136,12 @@ static const FatDirectoryEntry_t test_file_entry = {
     /*uint32_t*/ .filesize = 0x00000000
 };
 
+#define JMX_STATUS_PACKET   0x01
+#define JMX_INIT_PACKET     0x02
+#define JMX_DIR_PACKET      0x04
+
 static volatile uint8_t initialised = 0;
-static volatile uint8_t flag = 1;
+static volatile uint8_t jmx_flag = 0;
 
 #define JUNK_CLUSTER_COUNT          12
 
@@ -207,7 +213,14 @@ void user_putc(char c)
 
 void jmx_packet_received(char* identifier)
 {
-    flag = 0;
+    if(strcmp(identifier, "status") == 0)
+        jmx_flag |= JMX_STATUS_PACKET;
+    
+    if(strcmp(identifier, "init") == 0)
+        jmx_flag |= JMX_INIT_PACKET;
+    
+    if(strcmp(identifier, "dir") == 0)
+        jmx_flag |= JMX_DIR_PACKET;
 }
 
 void initialise_req(void* data)
@@ -259,19 +272,19 @@ int is_junk_cluster(int cluster_number)
     return 0;
 }
 
-int wait_for_reply(int cd)
+int wait_for_reply(int cd, uint8_t bit)
 { 
-    uint8_t c[2] = { 0, 0};
-	while (cd > 0 && flag)
+    uint8_t c = 0;
+    
+	while (cd > 0 && !(jmx_flag & bit))
 	{
-        int n = uart_read_data(c,1);
-        if (n == 1)
-        {
-            //tx_rx_buff_write('K');
-            sync_jmx_state_track(c[0]);
-        }
+        if (uart_read_data(&c,1))
+            jmx_parse(c);
+        
         cd--;
 	}
+    
+    jmx_flag &= ~bit;
     
     if(cd <= 0)
         return 0;
@@ -299,19 +312,38 @@ void target_get_entry(int entry, DIRRequestPacket* dir)
 
     jmx_send("dir", &local_dir_send);
     
-    if(!wait_for_reply(10000000))
+    if(!wait_for_reply(10000000, JMX_DIR_PACKET))
         dir->entry = -4;
-    
-	flag = 1;
 }
 
-void jmx_file_request(char* filename, int size, int offset, char mode)
+
+
+extern OS_TID main_task_id;
+extern OS_TID serial_task_id;
+
+int usb_block()
+{
+    OS_RESULT r = os_evt_wait_or(FLAGS_JMX_PACKET, 1000);
+    
+    if(r == OS_R_TMO)    
+       return 0;
+    
+    os_evt_clr(FLAGS_JMX_PACKET, main_task_id);
+    return 1;
+}
+
+void usb_resume()
+{
+    os_evt_set(FLAGS_JMX_DONE, serial_task_id);
+}
+
+int jmx_file_request(char* filename, int size, int offset, char mode)
 {
     FSRequestPacket local_fsr_send;
     
-    memset(&local_fsr_send,0,sizeof(FSRequestPacket));
+    memset(&local_fsr_send, 0, sizeof(FSRequestPacket));
 
-	memcpy(local_fsr_send.filename,filename, strnlen(filename, 16));
+	memcpy(local_fsr_send.filename, filename, strnlen(filename, 16));
     
     char mode_formatted[2] = {mode,0};
 	strcpy(local_fsr_send.mode, mode_formatted);
@@ -320,133 +352,137 @@ void jmx_file_request(char* filename, int size, int offset, char mode)
 	local_fsr_send.len = size;
 	local_fsr_send.base64 = NULL;
     
+    StatusPacket status;
+    
+    jmx_configure_buffer("status", &status);
+    
+    status.code = -4;
+    
     jmx_send("fs", &local_fsr_send);
-    print_flag = 0;
+    
+    // gain absolute control over the hardware uart
+    if(usb_block())
+        jmx_flag &= ~JMX_STATUS_PACKET;
+    
+    return status.code;
 }
 
 int target_get_file(char* filename, int size, int offset, uint8_t* buf)
 {
-	jmx_file_request(filename, size, offset,'r');
+	int ret = jmx_file_request(filename, size, offset,'r');
     
-    uint32_t byte_count = 0;
-    
-    while(byte_count < size)
-    {
-        uint8_t data;
+    if(ret == MICROBIT_JMX_SUCCESS)
+    { 
+        uint32_t byte_count = 0;
         
-        while(!uart_read_data(&data,1));
-        
-        buf[byte_count++] = data;
+        while(byte_count < size)
+        {
+            uint8_t data;
+            
+            while(!uart_read_data(&data,1));
+            
+            buf[byte_count++] = data;
+        }
     }
+    
+    // hand control of the hardware uart back to the serial_task.
+    usb_resume();
 }
-
-
 
 int target_write_buf(char* filename, int size, int offset, uint8_t* buf)
 {
-	jmx_file_request(filename,size,offset,'w');
-    
-    uint8_t tx_buf[20];
-    uint8_t tx_buf_offset = 0;
-    
-    uint8_t flow = 0;
-    uint8_t ready = 0;
+	int ret = jmx_file_request(filename,size,offset,'w');
     
     uint32_t byte_count = 0;
-
-    while (!ready)
-    {   
-        if(uart_read_data(&flow,1))
-            if (flow == 'O')
-                ready = 1;
+    
+    if(ret == MICROBIT_JMX_SUCCESS)
+    {
+        uint8_t tx_buf[20];
+        uint8_t tx_buf_offset = 0;
+        
+        uint8_t flow = 0;
+        uint8_t ready = 0;
+        
+        StatusPacket status;
+        
+        while(byte_count < size)
+        {
+            
+            int tx_size = MIN(16, size - byte_count);
+            
+            memset(tx_buf,0,20);
+            
+            uint32_t *checksum = (uint32_t *)&tx_buf[16];
+            
+            for(int i = 0; i < tx_size; i++)
+            {
+                tx_buf[i] = *(buf + byte_count + i);
+                *checksum += tx_buf[i];
+            }
+    
+            jmx_configure_buffer("status", &status);
+            
+            status.code = -4;
+            
+            uart_write_data(tx_buf, 20);
+            
+            if(!wait_for_reply(10000000, JMX_STATUS_PACKET) || status.code < MICROBIT_JMX_REPEAT)
+                break;
+            
+            if(status.code == MICROBIT_JMX_SUCCESS)
+                byte_count += tx_size;
+        }
     }
     
-    while(byte_count < size)
-    {
-        
-        int tx_size = MIN(16, size - byte_count);
-        
-        memset(tx_buf,0,20);
-        
-        uint32_t *checksum = (uint32_t *)&tx_buf[16];
-        
-        for(int i = 0; i < tx_size; i++)
-        {
-            tx_buf[i] = *(buf + byte_count + i);
-            *checksum += tx_buf[i];
-        }
-        
-        uart_write_data(tx_buf, 20);
-        
-        ready = 0;
-        
-        while (!ready)
-        {
-            if(uart_read_data(&flow,1))
-                if (flow == 'O' || flow == 'R' || flow == 'D')
-                    ready = 1;
-        }
-        
-        if(flow == 'O')
-            byte_count += tx_size;
-        
-        if(flow == 'D')
-            break;
-    }
-
+    usb_resume();
+    
     return byte_count;
 }
 
 int target_write_byte(char* filename, int size, int offset, uint8_t byte)
 {
-    jmx_file_request(filename,size,offset,'w');
-    
-    uint8_t tx_buf[20];
-    uint8_t tx_buf_offset = 0;
-    
-    memset(tx_buf, byte, 16);
-    
-    uint32_t *checksum = (uint32_t *)&tx_buf[16];
-    
-    *checksum = 0;
-    
-    for(int i = 0; i < 16; i++)
-        *checksum += tx_buf[i];
-    
-    uint8_t flow = 0;
-    uint8_t ready = 0;
+    int ret = jmx_file_request(filename,size,offset,'w');
     
     uint32_t byte_count = 0;
-
-    while (!ready)
-    {   
-        if(uart_read_data(&flow,1))
-            if (flow == 'O')
-                ready = 1;
+    
+    if(ret == MICROBIT_JMX_SUCCESS)
+    {
+        uint8_t tx_buf[20];
+        uint8_t tx_buf_offset = 0;
+        
+        memset(tx_buf, byte, 16);
+        
+        uint32_t *checksum = (uint32_t *)&tx_buf[16];
+        
+        *checksum = 0;
+        
+        for(int i = 0; i < 16; i++)
+            *checksum += tx_buf[i];
+        
+        uint8_t flow = 0;
+        uint8_t ready = 0;
+        
+        StatusPacket status;
+        
+        while(byte_count < size)
+        {
+            int tx_size = MIN(16, size - byte_count);
+            
+            jmx_configure_buffer("status", &status);
+            
+            status.code = -4;
+            
+            uart_write_data(tx_buf, 20);
+            
+            if(!wait_for_reply(10000000, JMX_STATUS_PACKET) || status.code < MICROBIT_JMX_REPEAT)
+                break;
+            
+            if(status.code == MICROBIT_JMX_SUCCESS)
+                byte_count += tx_size;
+        }
     }
     
-    while(byte_count < size)
-    {
-        
-        int tx_size = MIN(16, size - byte_count);
-        
-        uart_write_data(tx_buf, 20);
-        
-        ready = 0;
-        
-        while (!ready)
-        {
-            if(uart_read_data(&flow,1))
-                if (flow == 'O' || flow == 'R' || flow == 'D')
-                    ready = 1;
-        }
-        
-        if(flow == 'O')
-            byte_count += tx_size;
-        
-        if(flow == 'D')
-            break;
-    }
+    usb_resume();
     
     return byte_count;
 }
@@ -489,7 +525,7 @@ void board_vfs_add_files() {
         if(res == 1)
         {
             //if this returns one, we break, jmx should not be used.
-            if(sync_jmx_state_track(c[0]))
+            if(sync_jmx_state_track(c[0]) > 0)
                 break;
         }
         
@@ -497,7 +533,6 @@ void board_vfs_add_files() {
     }
     
     main_blink_cdc_led(MAIN_LED_OFF);
-    flag = 1;
     
     //uart_debug('I');
     

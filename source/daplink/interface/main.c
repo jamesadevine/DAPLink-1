@@ -41,28 +41,6 @@
 #include "DAP.h"
 #include "jmx.h"
 
-// Event flags for main task
-// Timers events
-#define FLAGS_MAIN_90MS         (1 << 0)
-#define FLAGS_MAIN_30MS         (1 << 1)
-// Reset events
-#define FLAGS_MAIN_RESET        (1 << 2)
-// Other Events
-#define FLAGS_MAIN_POWERDOWN    (1 << 4)
-#define FLAGS_MAIN_DISABLEDEBUG (1 << 5)
-#define FLAGS_MAIN_PROC_USB     (1 << 9)
-// Used by msd when flashing a new binary
-#define FLAGS_LED_BLINK_30MS    (1 << 6)
-// Timing constants (in 90mS ticks)
-// USB busy time
-#define USB_BUSY_TIME           (33)
-// Delay before a USB device connect may occur
-#define USB_CONNECT_DELAY       (11)
-// Delay before target may be taken out of reset or reprogrammed after startup
-#define STARTUP_DELAY           (1)
-// Decrement to zero
-#define DECZERO(x)              (x ? --x : 0)
-
 // Reference to our main task
 OS_TID main_task_id;
 OS_TID serial_task_id;
@@ -175,10 +153,7 @@ os_mbx_declare(serial_mailbox, 20);
 #define SIZE_DATA (64)
 static uint8_t data[SIZE_DATA];
 
-extern int sync_jmx_state_track(char c);
-
-    
-extern void tx_rx_buff_write(char c);
+int jmx_result = -1;
 
 __task void serial_process()
 {
@@ -215,20 +190,35 @@ __task void serial_process()
 
         len_data = USBD_CDC_ACM_DataFree();
 
-        /*if (len_data > SIZE_DATA) {
+        if (len_data > SIZE_DATA) {
             len_data = SIZE_DATA;
         }
 
         if (len_data) {
             
-            char c = 0;
+            uint8_t c = 0;
             int read_count = 0;
-            
-            while(uart_read_data((uint8_t*)&c,1) && read_count < len_data)
+                
+            while((uart_read_data(&c, 1)) && read_count < len_data)
             {
-                //tx_rx_buff_write('U');
-                if (sync_jmx_state_track(c))
-                    data[read_count++] = c;
+                char characters[2] = {jmx_previous(), c};
+                
+                jmx_result = jmx_state_track(c);
+                
+                //if we were previously digesting a packet, and the result was a success, signal the other thread.
+                if(jmx_result == 0)
+                {
+                    os_evt_set(FLAGS_JMX_PACKET, main_task_id);
+                    os_evt_wait_or(FLAGS_JMX_DONE, NO_TIMEOUT);
+                    os_evt_clr(FLAGS_JMX_DONE, serial_task_id);
+                    continue;
+                }
+                
+                if(jmx_result == -1)
+                    continue;
+                
+                for(int i = 2 - jmx_result; i < 2; i++)
+                    data[read_count++] = characters[i];
             }
             
             if(read_count)
@@ -236,19 +226,10 @@ __task void serial_process()
                 if (USBD_CDC_ACM_DataSend(data , read_count)) {
                     main_blink_cdc_led(MAIN_LED_OFF);
                 }
+                
+                rt_dly_wait(1);
             }
-//#ifdef NATIVE_FILESYSTEM
-                //data[data_offset++] = data[i];
-//#endif
-            //forward over usb
-            if(data_offset)
-            {
-                if (USBD_CDC_ACM_DataSend(data , data_offset)) {
-                    main_blink_cdc_led(MAIN_LED_OFF);
-                }
-            }        
-            
-        }*/
+        }
 
         //returns the number of buffered characters 
         len_data = uart_write_free();
@@ -264,9 +245,9 @@ __task void serial_process()
 
         if (len_data) {
             //forward to target.
-            /*if (uart_write_data(data, len_data)) {
+            if (uart_write_data(data, len_data)) {
                 main_blink_cdc_led(MAIN_LED_OFF);
-            }*/
+            }
         }
     }
 }
