@@ -222,8 +222,6 @@ __task void serial_process()
                 //if we were previously digesting a packet, and the result was a success, signal the other thread.
                 if(jmx_result == 0)
                 {
-                    
-                    
                     // if our jmx invocation didn't set our flag, additional processing is required,
                     // pass control to the main_thread.
                     if(os_evt_wait_or(FLAGS_JMX_DONE,0) == OS_R_TMO)

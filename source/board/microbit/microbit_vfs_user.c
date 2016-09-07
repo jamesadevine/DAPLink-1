@@ -156,10 +156,10 @@ static const FatDirectoryEntry_t test_file_entry = {
 /*static*/ uint8_t board_vfs_state = BOARD_VFS_STATE_BOOT;
 
 static const char* microbit_board_errors[4] = {
-    "Oops, I can't support multiple writes from your machine :(",
-    "Deleting and creating new files is too much... I CAN'T HANDLE IT! :(",
-    "Uh oh, I'm too full.",
-    "I don't what was wrong with me, am I better now? :O"
+    "Sorry - I can't handle writing more than one file at a time from this computer.",
+    "That file copy didn't seem to work - try again?",
+    "That was one byte too many - I'm really full!",
+    "I don't what was wrong with me, but I feel better now :)"
 };
 
 /*static*/ uint8_t jmx_flag = 0;
