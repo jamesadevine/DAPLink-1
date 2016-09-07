@@ -12,6 +12,7 @@ FSRequestPacket* jmx_fsr_p = NULL;
 DIRRequestPacket* jmx_dir_p = NULL;
 StatusPacket* jmx_status_p = NULL;
 RedirectPacket* jmx_redirect_p = NULL;
+UARTConfigPacket* jmx_uart_p = NULL;
 
 static uint8_t* jmx_data_buffer = NULL;		// 4
 static uint32_t jmx_data_size = 0;			// 4
@@ -77,7 +78,7 @@ __inline int jmx_get_table_entry_index(char* packet_identifier, int identifier_l
 	return STATUS_ERROR;
 }
 
-char jmx_previous()
+char jmx_previous(void)
 {
 	return previous;
 }
@@ -100,9 +101,9 @@ void jmx_send_string(char* identifier)
   *
   * @return STATUS_ERROR if the identifier doesn't exist, data is null. Or STATUS_SUCCESS if the send was successful.
   */
-int jmx_send(char* identifier, void* data)
+int jmx_send(const char* identifier, void* data)
 {
-	int table_index = jmx_get_table_entry_index(identifier, strlen(identifier));
+	int table_index = jmx_get_table_entry_index((char *)identifier, strlen(identifier));
 
 	if (table_index == STATUS_ERROR || data == NULL)
 		return STATUS_ERROR;
@@ -143,9 +144,9 @@ int jmx_send(char* identifier, void* data)
 			else if (a->type == T_STATE_NUMBER)
 			{
 				char result[MAX_JSON_NUMBER];
-				int16_t number;
-				memcpy(&number, content, sizeof(int16_t));
-				itoa(number, result);//, 10);//, MAX_JSON_NUMBER, 10);
+				int number;
+				memcpy(&number, content, sizeof(int));
+				itoa(number, result);//_itoa(number, result, 10);
 
 				for (uint8_t j = 0; j < strlen(result); j++)
 					user_putc(result[j]);
@@ -171,9 +172,9 @@ int jmx_send(char* identifier, void* data)
   * @return STATUS_ERROR if the identifier doesn't exist, data is null, or there already is a buffer configured.
   *			or STATUS_SUCCESS
   */
-int jmx_configure_buffer(char* identifier, void* data)
+int jmx_configure_buffer(const char* identifier, void* data)
 {
-	int table_index = jmx_get_table_entry_index(identifier, strlen(identifier));
+	int table_index = jmx_get_table_entry_index((char *)identifier, strlen(identifier));
 
 	if (table_index < 0 || jmx_state & J_STATE_USER_BUFFER || data == NULL)
 		return STATUS_ERROR;
@@ -221,14 +222,12 @@ int jmx_detect_key()
 	if (a->type == T_STATE_STRING)
 	{
 		jmx_data_buffer = (uint8_t *)base + a->offset;
-
 		jmx_data_size = a->buffer_size;
 	}
 	else if (a->type == T_STATE_NUMBER)
 	{
 		//malloc a buffer max 12 character for a 'c-style' integer.
 		jmx_data_buffer = (uint8_t *)malloc(MAX_JSON_NUMBER);
-		memset(jmx_data_buffer, 0, MAX_JSON_NUMBER);
 		jmx_data_size = MAX_JSON_NUMBER;
 	}
 	else if (a->type == T_STATE_DYNAMIC_STRING)
@@ -255,7 +254,6 @@ int jmx_detect_key()
 		fieldLen += 1;
 
 		char* dynamicData = (char *)malloc(fieldLen);
-		memset(dynamicData, 0, fieldLen);
 
 		char** bufferPointer = (char **)((char *)base + a->offset);
 
@@ -266,6 +264,7 @@ int jmx_detect_key()
 	}
 
 	jmx_data_offset = 0;
+	memset(jmx_data_buffer, 0, jmx_data_size);
 
 	return STATUS_OK;
 }
@@ -486,11 +485,11 @@ int jmx_parse(char c)
 				int actionIndex = jmx_get_action_index(t, (char *)jmx_key_buffer, jmx_key_offset);
 				JMXActionItem* a = &t->actions[actionIndex];
 
-				int16_t res = atoi((char *)jmx_data_buffer);
+				int res = atoi((char *)jmx_data_buffer);
 
 				char* dest = (char *)(*t->pointer_base) + a->offset;
 
-				memcpy(dest, &res, sizeof(int16_t));
+				memcpy(dest, &res, sizeof(int));
 
 				free(jmx_data_buffer);
 			}
@@ -536,12 +535,14 @@ int jmx_parse(char c)
 	{
 		if (jmx_parser_state & P_STATE_KEY && jmx_key_offset < KEY_BUFFER_SIZE)
 			jmx_key_buffer[jmx_key_offset++] = c;
-		else if (jmx_parser_state & P_STATE_VALUE && jmx_data_offset < jmx_data_size)
+		// -1 for null terminator...
+		else if (jmx_parser_state & P_STATE_VALUE && jmx_data_offset < (jmx_data_size - 1))
 				jmx_data_buffer[jmx_data_offset++] = c;
 	}
 	else if (jmx_token_state & T_STATE_NUMBER && (IS_DIGIT(c) || (c == '-' && jmx_data_offset == 0)) && jmx_parser_state & P_STATE_VALUE)
 	{
-		if (jmx_data_offset < jmx_data_size)
+		// -1 for null terminator...
+		if (jmx_data_offset < (jmx_data_size - 1))
 			jmx_data_buffer[jmx_data_offset++] = c;
 	}
 	else
@@ -551,9 +552,6 @@ int jmx_parse(char c)
 }
 
 //TODO: handle non alphanumeric values in fields... REJECT
-//TODO: validate T_STATE_DYNAMIC_STRING free's
-//TODO: verify trimming of longer than expected fields (including the NULL terminator!!!)
-//TODO: increase itoa buffer size... will fail if offset/size > 16 bit int
 
 
 /**

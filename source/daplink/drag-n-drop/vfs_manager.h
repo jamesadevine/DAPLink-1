@@ -83,6 +83,8 @@ void board_vfs_reset(void);
 
 int board_vfs_remount_req(void);
 
+int board_vfs_enabled(void);
+
 // Add board-specific functions to the VFS.
 //static uint32_t board_read_subdir(uint32_t sector_offset, uint8_t *data, uint32_t num_sectors);
 

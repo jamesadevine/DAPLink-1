@@ -165,22 +165,36 @@ __task void serial_process()
         // Check our mailbox to see if we need to set anything up with the UART
         // before we do any sending or receiving
         if (os_mbx_wait(&serial_mailbox, &msg, 0) == OS_R_OK) {
+            
+            // if our extended vfs is enabled, we pass control of the uart
+            // to the user side application running on the target.
+            // JMX is in use, and any change of state of the uart interface 
+            // would be bad...
+            int board_vfs = board_vfs_enabled();
+            
             switch ((SERIAL_MSG)(unsigned)msg) {
                 case SERIAL_INITIALIZE:
-                    //uart_initialize();
+                    if(!board_vfs)
+                        uart_initialize();
                     break;
 
                 case SERIAL_UNINITIALIZE:
-                    //uart_uninitialize();
+                    if(!board_vfs)
+                        uart_uninitialize();
                     break;
 
                 case SERIAL_RESET:
-                    //uart_reset();
+                    
+                    if(!board_vfs)
+                        uart_reset();
                     break;
 
                 case SERIAL_SET_CONFIGURATION:
-                    serial_get_configuration(&config);
-                    uart_set_configuration(&config);
+                    if(!board_vfs)
+                    {
+                        serial_get_configuration(&config);
+                        uart_set_configuration(&config);
+                    }
                     break;
 
                 default:
@@ -208,9 +222,18 @@ __task void serial_process()
                 //if we were previously digesting a packet, and the result was a success, signal the other thread.
                 if(jmx_result == 0)
                 {
-                    os_evt_set(FLAGS_JMX_PACKET, main_task_id);
-                    os_evt_wait_or(FLAGS_JMX_DONE, NO_TIMEOUT);
+                    
+                    
+                    // if our jmx invocation didn't set our flag, additional processing is required,
+                    // pass control to the main_thread.
+                    if(os_evt_wait_or(FLAGS_JMX_DONE,0) == OS_R_TMO)
+                    {
+                        os_evt_set(FLAGS_JMX_PACKET, main_task_id);
+                        os_evt_wait_or(FLAGS_JMX_DONE, NO_TIMEOUT);
+                    }
+                    
                     os_evt_clr(FLAGS_JMX_DONE, serial_task_id);
+                    
                     continue;
                 }
                 

@@ -8,7 +8,7 @@
 
 #define KEY_BUFFER_SIZE			10
 #define JMX_ACTION_COUNT		6
-#define JMX_TABLE_COUNT			5
+#define JMX_TABLE_COUNT			6
 
 #define member_size(type, member)	sizeof(((type *)0)->member)
 #define offsetof(st, m) ((size_t)&(((st *)0)->m))
@@ -46,12 +46,15 @@ extern "C" {
 extern void nop(void*);
 //extern void dir_request(void* data);
 extern void initialise_req(void* data);
+extern void uart_req(void* data);
+
 
 extern JMXInitPacket* jmx_init_p;
 extern FSRequestPacket* jmx_fsr_p;
 extern DIRRequestPacket* jmx_dir_p;
 extern StatusPacket* jmx_status_p;
 extern RedirectPacket* jmx_redirect_p;
+extern UARTConfigPacket* jmx_uart_p;
 
 #ifdef __cplusplus
 }
@@ -171,13 +174,32 @@ const JMXActionTable statusMap = {
 	}
 };
 
+/**
+*	{
+*		"uart" : {
+*			"baud": baud_rate
+*		}
+*	}
+*/
+const JMXActionTable uartMap = {
+	"uart",
+	sizeof(UARTConfigPacket),	// struct size
+	(void **)&jmx_uart_p,		// pointer base
+	uart_req,			// result function pointer
+	{
+		//	KEY			TOKEN TYPE			STORAGE OFFSET INTO STRUCT		SIZE OF STORAGE BUFFER
+		{ "baud",		T_STATE_NUMBER,		offsetof(UARTConfigPacket, baud),	member_size(UARTConfigPacket, baud) },
+	}
+};
+
 const JMXActionStore actionStore =
 {
 	&fsMap,
 	&dirMap,
 	&initMap,
 	&redirectMap,
-	&statusMap
+	&statusMap,
+	&uartMap
 };
 
 #endif

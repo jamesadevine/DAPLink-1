@@ -7,8 +7,8 @@
 typedef struct FSRequestPacket_t
 {
 	char filename[16 + NULL_TERMINATOR];
-	int16_t offset;
-	int16_t len;
+	int offset;
+	int len;
 	char mode[4 + NULL_TERMINATOR];
 	char format[4 + NULL_TERMINATOR];
 	char* base64;
@@ -17,18 +17,23 @@ typedef struct FSRequestPacket_t
 typedef struct DIRRequestPacket_t
 {
 	char filename[16 + NULL_TERMINATOR];
-	int16_t entry;
-	int16_t size;
+	int entry;
+	int size;
 } DIRRequestPacket;
 
 typedef struct StatusPacket_t
 {
-	int16_t code;
+	int code;
 } StatusPacket;
+
+typedef struct UARTConfigPacket_t
+{
+	int baud;
+} UARTConfigPacket;
 
 typedef struct JMXInitPacket_t
 {
-	int16_t enable;
+	int enable;
 	char v[8 + NULL_TERMINATOR];
 } JMXInitPacket;
 

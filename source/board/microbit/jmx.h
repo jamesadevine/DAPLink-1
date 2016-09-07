@@ -89,7 +89,7 @@ int jmx_parse(char c);
 /**
   * Returns the previous char, captured by jmx.
   */
-char jmx_previous();
+char jmx_previous(void);
 
 /**
   *	Accepts a single character and updates the state of this instance of JMX parser, and also maintains a "serial_state" varaible
@@ -109,7 +109,7 @@ int jmx_state_track(char c);
   *
   * @return STATUS_ERROR if the identifier doesn't exist, data is null. Or STATUS_SUCCESS if the send was successful.
   */
-int jmx_send(char* identifier, void* data);
+int jmx_send(const char* identifier, void* data);
 
 /**
   * Configures the given identifiers' pointer to point to the given buffer (data)
@@ -121,7 +121,7 @@ int jmx_send(char* identifier, void* data);
   * @return STATUS_ERROR if the identifier doesn't exist, data is null, or there already is a buffer configured.
   *			or STATUS_SUCCESS
   */
-int jmx_configure_buffer(char* identifier, void* data);
+int jmx_configure_buffer(const char* identifier, void* data);
 
 #ifdef __cplusplus
 }

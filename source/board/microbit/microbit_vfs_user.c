@@ -122,7 +122,7 @@ static uint32_t microbit_flash_start = 0;
 static uint32_t microbit_flash_size = 0;
 
 static int first = 0;
-static int entries_count = 0;
+/*static*/ int entries_count = 0;
 
 static const FatDirectoryEntry_t test_file_entry = {
     /*uint8_t[11] */ .filename = {""},
@@ -153,7 +153,7 @@ static const FatDirectoryEntry_t test_file_entry = {
 #define BOARD_VFS_ERROR_IDX_FULL    3
 #define BOARD_VFS_ERROR_IDX_CONF    4
 
-static uint8_t board_vfs_state = BOARD_VFS_STATE_BOOT;
+/*static*/ uint8_t board_vfs_state = BOARD_VFS_STATE_BOOT;
 
 static const char* microbit_board_errors[4] = {
     "Oops, I can't support multiple writes from your machine :(",
@@ -161,7 +161,8 @@ static const char* microbit_board_errors[4] = {
     "Uh oh, I'm too full.",
     "I don't what was wrong with me, am I better now? :O"
 };
-static uint8_t jmx_flag = 0;
+
+/*static*/ uint8_t jmx_flag = 0;
 
 #define JUNK_CLUSTER_COUNT          12
 
@@ -251,8 +252,30 @@ void initialise_req(void* data)
     }else
         board_vfs_state &= ~BOARD_VFS_STATE_INIT;
     
-    jmx_flag |= JMX_INIT_PACKET;
+    
+    // this is a weird one, we could receive a valid jmx init packet after a boot or a flash, 
+    // in which case we've already handled it
+    if(board_vfs_state & (BOARD_VFS_STATE_FLASH | BOARD_VFS_STATE_BOOT))
+        jmx_flag |= JMX_INIT_PACKET;
+    else
+        // This doesn't require further handling, flag the serial process.
+        os_evt_set(FLAGS_JMX_DONE, serial_task_id);
 }
+
+void uart_req(void* data)
+{
+    UARTConfigPacket* p = (UARTConfigPacket*)data;
+ 
+    UART_Configuration config = init_config;
+    
+    config.Baudrate = p->baud;
+   
+    uart_set_configuration(&config);
+    
+    // This doesn't require further handling, flag the serial process.
+    os_evt_set(FLAGS_JMX_DONE, serial_task_id);
+}
+
 #ifdef __cplusplus
 }
 #endif
@@ -356,8 +379,9 @@ int jmx_file_request(char* filename, int size, int offset, char mode)
     jmx_send("fs", &local_fsr_send);
     
     // gain absolute control over the hardware uart
-    if(usb_block())
-        jmx_flag &= ~JMX_STATUS_PACKET;
+    usb_block();
+    
+    jmx_flag &= ~JMX_STATUS_PACKET;
     
     return status.code;
 }
@@ -366,10 +390,10 @@ int target_get_file(char* filename, int size, int offset, uint8_t* buf)
 {
 	int ret = jmx_file_request(filename, size, offset,'r');
     
+    uint32_t byte_count = 0;
+    
     if(ret == MICROBIT_JMX_SUCCESS)
     { 
-        uint32_t byte_count = 0;
-        
         while(byte_count < size)
         {
             uint8_t data;
@@ -382,6 +406,8 @@ int target_get_file(char* filename, int size, int offset, uint8_t* buf)
     
     // hand control of the hardware uart back to the serial_task.
     usb_resume();
+    
+    return byte_count;
 }
 
 int target_write_buf(char* filename, int size, int offset, uint8_t* buf)
@@ -393,11 +419,7 @@ int target_write_buf(char* filename, int size, int offset, uint8_t* buf)
     if(ret == MICROBIT_JMX_SUCCESS)
     {
         uint8_t tx_buf[20];
-        uint8_t tx_buf_offset = 0;
-        
-        uint8_t flow = 0;
-        uint8_t ready = 0;
-        
+
         StatusPacket status;
         
         while(byte_count < size)
@@ -448,7 +470,6 @@ int target_write_byte(char* filename, int size, int offset, uint8_t byte)
     if(ret == MICROBIT_JMX_SUCCESS)
     {
         uint8_t tx_buf[20];
-        uint8_t tx_buf_offset = 0;
         
         memset(tx_buf, byte, 16);
         
@@ -458,10 +479,7 @@ int target_write_byte(char* filename, int size, int offset, uint8_t byte)
         
         for(int i = 0; i < 16; i++)
             *checksum += tx_buf[i];
-        
-        uint8_t flow = 0;
-        uint8_t ready = 0;
-        
+
         StatusPacket status;
         
         while(byte_count < size)
@@ -521,7 +539,8 @@ void target_get_entry(int entry, DIRRequestPacket* dir, bool aquire_usb)
 void ls(bool usb_aquire)
 {
     memset(microbit_page_buffer, 0, MICROBIT_PAGE_BUFFER_SIZE);
-            
+    entries_count = 0;
+    
     // a maximum of 85 entries, allocate our cluster, add our hooks
     vfs_create_subdir("FILES      ", 85, board_read_subdir, board_write_subdir);
     //uart_debug('P');
@@ -533,7 +552,7 @@ void ls(bool usb_aquire)
     {
         target_get_entry(entries_count, &dir, usb_aquire);
         
-        if (dir.entry < 0)
+        if (dir.entry < 0 || dir.size < 0)
             done = true;
         else
         {
@@ -608,7 +627,6 @@ void board_vfs_add_files() {
         wait_for_reply(2000000, JMX_INIT_PACKET);
     else
     {
-        entries_count = 0;
         reset_junk_clusters();
         
         uint8_t error_index = (board_vfs_state & 0xF0) >> 4;
@@ -620,8 +638,6 @@ void board_vfs_add_files() {
             
             vfs_create_file("FS_ERRORTXT", read_file_fs_error, 0, strlen(microbit_board_errors[error_index]));
         }
-        
-        //we could plug in an FS_ERROR TXT in here...
     }
     
     
@@ -653,6 +669,13 @@ void board_vfs_add_files() {
 }
 
 /*
+
+I WROTE SOME CODE TO ACCOUNT FOR A RESET BUTTON BEING PUSHED DURING RUNNING....
+
+IN THE INIT PACKET HANDLER, AND THE USB THREAD.
+
+
+
 * cache meta-data: filename, cluster.
 * READ_ONLY
 * creates are allowed
@@ -849,12 +872,19 @@ void board_vfs_reset(void)
     board_vfs_state &= ~0x0F;
     entries_count = 0;
     
+    uart_reset();
+    
     reset_junk_clusters();
 }
 
 int board_vfs_remount_req(void)
 {
     return (board_vfs_state & BOARD_VFS_STATE_INVALID);
+}
+
+int board_vfs_enabled(void)
+{
+    return (board_vfs_state & BOARD_VFS_STATE_INIT);
 }
 
 int board_vfs_read(uint32_t requested_sector, uint8_t *buf, uint32_t num_sectors)
@@ -981,13 +1011,6 @@ int board_vfs_write(uint32_t requested_sector, uint8_t *buf, uint32_t num_sector
 
 	int write_end = VFS_SECTOR_SIZE * num_sectors;
 	int bytes_parsed = 0;
-    
-    uint8_t tx_buf[20];
-    uint8_t tx_buf_offset = 0;
-    
-    uint8_t flow = 0;
-    uint8_t ready = 0;
-    
     
 	if (entry->first_cluster & UNKNOWN_SIZE_BIT)
 	{
