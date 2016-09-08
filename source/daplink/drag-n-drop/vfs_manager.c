@@ -304,8 +304,6 @@ void usbd_msc_init(void)
 
 void usbd_msc_read_sect(uint32_t sector, uint8_t *buf, uint32_t num_of_sectors)
 {
-    debug_msg("R\n")
-    
     sync_assert_usb_thread();
 
     // dont proceed if we're not ready
@@ -339,7 +337,6 @@ void usbd_msc_write_sect(uint32_t sector, uint8_t *buf, uint32_t num_of_sectors)
     time_usb_idle = 0;
 
     if (TRASNFER_FINISHED == file_transfer_state.transfer_state) {
-        board_vfs_reset();
         return;
     }
 
@@ -354,7 +351,7 @@ void usbd_msc_write_sect(uint32_t sector, uint8_t *buf, uint32_t num_of_sectors)
     {
         file_data_handler(sector, buf, num_of_sectors);
     
-        if(TRASNFER_FINISHED == file_transfer_state.transfer_state)
+        if(TRASNFER_FINISHED == file_transfer_state.transfer_state || file_transfer_state.stream_optional_finish)
             board_vfs_reset();
     }
     else if(vfs_write(sector, buf, num_of_sectors) == -1)

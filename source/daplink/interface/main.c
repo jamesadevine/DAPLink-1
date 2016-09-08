@@ -207,7 +207,7 @@ __task void serial_process()
         if (len_data > SIZE_DATA) {
             len_data = SIZE_DATA;
         }
-
+        
         if (len_data) {
             
             uint8_t c = 0;
@@ -231,7 +231,6 @@ __task void serial_process()
                     }
                     
                     os_evt_clr(FLAGS_JMX_DONE, serial_task_id);
-                    
                     continue;
                 }
                 

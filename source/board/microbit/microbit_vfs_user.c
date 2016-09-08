@@ -341,9 +341,7 @@ int wait_for_reply(int cd, uint8_t bit)
 
 int usb_block()
 {
-    OS_RESULT r = os_evt_wait_or(FLAGS_JMX_PACKET, 1000);
-    
-    if(r == OS_R_TMO)    
+    if(os_evt_wait_or(FLAGS_JMX_PACKET, 1000) == OS_R_TMO)    
        return 0;
     
     return 1;
@@ -353,6 +351,8 @@ void usb_resume()
 {
     os_evt_clr(FLAGS_JMX_PACKET, main_task_id);
     os_evt_set(FLAGS_JMX_DONE, serial_task_id);
+    //force a context switch.
+    rt_delay(1);
 }
 
 int jmx_file_request(char* filename, int size, int offset, char mode)
@@ -441,19 +441,27 @@ int target_write_buf(char* filename, int size, int offset, uint8_t* buf)
             
             status.code = -4;
             
-            uart_write_data(tx_buf, 20);
+            int ret = uart_write_data(tx_buf, 20);
+            
+            if(ret < 20)
+                ret = 20;
             
             if(!wait_for_reply(10000000, JMX_STATUS_PACKET) || status.code < MICROBIT_JMX_REPEAT)
             {
                 board_vfs_state |= (BOARD_VFS_ERROR_IDX_FULL << 4);
                 board_vfs_state |= BOARD_VFS_STATE_INVALID;
-                board_vfs_state |= BOARD_VFS_STATE_BOOT;
                 break;
             }
             
             if(status.code == MICROBIT_JMX_SUCCESS)
                 byte_count += tx_size;
         }
+    }
+    
+    if(byte_count < size)
+    {
+        board_vfs_state |= (BOARD_VFS_ERROR_IDX_FULL << 4);
+        board_vfs_state |= BOARD_VFS_ERROR_IDX_CONF;
     }
     
     usb_resume();
@@ -496,13 +504,18 @@ int target_write_byte(char* filename, int size, int offset, uint8_t byte)
             {
                 board_vfs_state |= (BOARD_VFS_ERROR_IDX_FULL << 4);
                 board_vfs_state |= BOARD_VFS_STATE_INVALID;
-                board_vfs_state |= BOARD_VFS_STATE_BOOT;
                 break;
             }
             
             if(status.code == MICROBIT_JMX_SUCCESS)
                 byte_count += tx_size;
         }
+    }
+    
+    if(byte_count < size)
+    {
+        board_vfs_state |= (BOARD_VFS_ERROR_IDX_FULL << 4);
+        board_vfs_state |= BOARD_VFS_ERROR_IDX_CONF;
     }
     
     usb_resume();
@@ -789,17 +802,15 @@ static uint32_t board_read_subdir(uint32_t sector_offset, uint8_t *data, uint32_
     return size;
 }
 
+// REFACTOR, USB BEHAVIOUR, EMPTY TX BUFF BEFORE SIGNALLING JMX?, TEST DELETION HANDLING, USB BUG
+
 LWDirectoryEntry_t* getEntry(uint32_t requested_cluster)
 { 
-    LWDirectoryEntry_t* lw;
-    LWDirectoryEntry_t* file_transfer = NULL;
+    LWDirectoryEntry_t* lw = NULL;
     
     for(int i = 0; i < entries_count; i++)
     {
         lw = ((LWDirectoryEntry_t*)microbit_page_buffer) + i;
-        
-        if(!file_transfer && lw->first_cluster & UNKNOWN_SIZE_BIT)
-            file_transfer = lw;
         
         uint32_t clust = lw->first_cluster & ~0xF000;
         
@@ -810,7 +821,7 @@ LWDirectoryEntry_t* getEntry(uint32_t requested_cluster)
             return lw;
     }
     
-    return file_transfer;
+    return NULL;
 }
 
 LWDirectoryEntry_t* getEntryByShortName(const char* name)
@@ -945,11 +956,14 @@ int board_vfs_write(uint32_t requested_sector, uint8_t *buf, uint32_t num_sector
         //tx_rx_buff_write('R');
         return -1;
     }
-    // find correct entry
+
     LWDirectoryEntry_t* entry = NULL;
     
+    // if we have an ongoing file transfer.
     if(fts)
     {
+        bool valid = true;
+        
         // first time processing this file transfer request.
         if(requested_sector == fts->next_sector || fts->next_sector == 0)
         {
@@ -957,41 +971,34 @@ int board_vfs_write(uint32_t requested_sector, uint8_t *buf, uint32_t num_sector
             fts->next_sector = requested_sector + 1;
             entry = fts->currentEntry;
         }
+        // this is an out of sequence write, it breaks our assumption of contiguity with writes, and structure.
         else if(requested_sector != fts->next_sector)
         {
-            if(fts->currentEntry->size > 0)
-            {
-                board_vfs_state |= (BOARD_VFS_ERROR_IDX_CONF << 4);
-                board_vfs_state |= BOARD_VFS_STATE_INVALID;
-            }
-            tx_rx_buff_write('O');
-           
+            valid = false;
+        }
+        
+        //if we are overflowing into another dirent, or we haven't seen a contiguous write...
+        if(!valid || (getEntry(first + microbit_fs_off) != NULL && fts->currentEntry != getEntry(first + microbit_fs_off)))
+        {
+            board_vfs_state |= (BOARD_VFS_ERROR_IDX_CONF << 4);
+            board_vfs_state |= BOARD_VFS_STATE_INVALID;
+            
             entry = NULL;
             free(fts);
             fts = NULL;
         }
-
-        
-        tx_rx_buff_write('I');
-        if(requested_sector >= 100)
-            tx_rx_buff_write('0' + ((requested_sector/100)%10));
-        tx_rx_buff_write('0' + ((requested_sector/10)%10));
-        tx_rx_buff_write('0' + (((requested_sector))%10));
     }
     else
         entry = getEntry(first + microbit_fs_off);
     
     if(entry == NULL)
     {
-        //tx_rx_buff_write('0' + (((first + microbit_fs_off)/10)%10));
-        //tx_rx_buff_write('0' + (((first + microbit_fs_off))%10));
-        //tx_rx_buff_write('A');
         add_junk_cluster(first + microbit_fs_off);
         return -1;
     }
     
     // we are receiving writes for a deleted file, or we are receiving writes after a file has been deleted, something has gone wrong...
-    if(entry->first_cluster & FILE_DELETED_BIT || countDeletedEntries() > 0)
+    if(entry->first_cluster & FILE_DELETED_BIT)
     {
         board_vfs_state |= (BOARD_VFS_ERROR_IDX_DEL << 4);
         board_vfs_state |= BOARD_VFS_STATE_INVALID;
@@ -1062,13 +1069,6 @@ int board_vfs_write(uint32_t requested_sector, uint8_t *buf, uint32_t num_sector
 	}
     else
     {
-        tx_rx_buff_write('W');
-        if(requested_sector >= 100)
-            tx_rx_buff_write('0' + ((requested_sector/100)%10));
-        tx_rx_buff_write('0' + ((requested_sector/10)%10));
-        tx_rx_buff_write('0' + (((requested_sector))%10));
-        
-        
         int size = MIN(entry->size - (byte_offset + bytes_written), write_end);
         
         return target_write_buf((char*) entry->filename, size, byte_offset, buf);
@@ -1090,20 +1090,22 @@ static void board_write_subdir(uint32_t sector_offset, const uint8_t *data, uint
     {
         FatDirectoryEntry_t current_entry = new_entry[entry_offset];
         
+        // we aren't interested in Long filenames, they add unneccessary complexity.
         if(current_entry.attributes & VFS_FILE_ATTR_LONG_NAME)
         {
             entry_offset++;
             continue;
         }
         
+        // transform to a complete cluster number.
         uint32_t cluster = ((uint32_t)current_entry.first_cluster_high_16 << 16) |  current_entry.first_cluster_low_16;
         
-        LWDirectoryEntry_t* lw = NULL;
+        LWDirectoryEntry_t* lw = getEntry(cluster);
         
+        // this is a deleted entry.
         if(0xe5 == (uint8_t)current_entry.filename[0])
-        {
-            lw = getEntry(cluster);
-            
+        {   
+            // set our bit, delete the file and continue
             if(lw)
             {
                 int ret = jmx_file_request((char *)lw->filename, 0, 0, 'd');
@@ -1118,41 +1120,21 @@ static void board_write_subdir(uint32_t sector_offset, const uint8_t *data, uint
         }
         
         if(!current_entry.attributes)
-        {
-            tx_rx_buff_write('@');
             break;
-        }
         
-        for(int j = 0; j < 11; j++)
+        // this is almost certainly a new file, but we should check the filename just to be sure...
+        if(!lw)
+            lw = getEntryByShortName(current_entry.filename);
+        
+        // This is a new entry, or we could be replacing a deleted file.
+        if(!lw || lw->first_cluster & FILE_DELETED_BIT)
         {
-            tx_rx_buff_write(current_entry.filename[j]);
-            tx_rx_buff_write('0' + ((current_entry.filename[j] / 10)%10));
-            tx_rx_buff_write('0' + ((current_entry.filename[j])%10));
-        }
-        
-        int deleted_count = countDeletedEntries();
-        
-        lw = getEntryByShortName(current_entry.filename);
-        
-        // This is a new entry..., and the user hasn't deleted any files...
-        if(!lw && deleted_count == 0)
-        {
-            tx_rx_buff_write('0' + ((current_entry.filesize / 100)%10));
-            tx_rx_buff_write('0' + ((current_entry.filesize / 10)%10));
-            tx_rx_buff_write('0' + ((current_entry.filesize)%10));
-            tx_rx_buff_write('-');
-            tx_rx_buff_write('0' + ((cluster / 100)%10));
-            tx_rx_buff_write('0' + ((cluster / 10)%10));
-            tx_rx_buff_write('0' + ((cluster)%10));
-            
             LWDirectoryEntry_t new_lw;
-            
             memset(&new_lw, 0, sizeof(LWDirectoryEntry_t));
-            
-            tx_rx_buff_write('E');
-            //new SHORT dirent, capture the filename and transform it to 8-[period]-3.
+
             int filename_offset = 0;
-       
+            
+            // capture the filename and transform it to 8-[period]-3, we only support 8.3 filenames when writing.
             for(int j = 0; j < 11; j++)
             {
                 if(current_entry.filename[j] == 0)
@@ -1165,16 +1147,32 @@ static void board_write_subdir(uint32_t sector_offset, const uint8_t *data, uint
                     new_lw.filename[filename_offset++] = current_entry.filename[j];
             }
             
-            for(int i = 0 ; i < filename_offset; i++)
-                tx_rx_buff_write(new_lw.filename[i]);
-            
             new_lw.size = current_entry.filesize;
             new_lw.first_cluster = cluster;
             
             if(new_lw.size == 0)
                 new_lw.first_cluster |= UNKNOWN_SIZE_BIT;
             
-            LWDirectoryEntry_t* dest = ((LWDirectoryEntry_t*)microbit_page_buffer) + entries_count;
+            LWDirectoryEntry_t* dest ;
+            
+            // if this is true, we are allocating over an existing, deleted, entry...
+            if(lw)
+            {
+                uint32_t file_size_clust = (lw->size / VFS_CLUSTER_SIZE) + 1;
+                uint32_t new_size_clust = (new_lw.size / VFS_CLUSTER_SIZE) + 1;
+                
+                // if we are allocating within the existing directory entry's cluster allocation
+                // that's fine, however, if we overflow into a new cluster, blow up...
+                if(new_size_clust <= file_size_clust)
+                    dest = lw;
+                else
+                {
+                    board_vfs_state |= (BOARD_VFS_ERROR_IDX_DEL << 4);
+                    board_vfs_state |= BOARD_VFS_STATE_INVALID;
+                    continue;
+                }
+            }else
+                dest = ((LWDirectoryEntry_t*)microbit_page_buffer) + entries_count;
             
             *dest = new_lw;
             
@@ -1201,14 +1199,6 @@ static void board_write_subdir(uint32_t sector_offset, const uint8_t *data, uint
                 }
             }
             entries_count++;
-            
-            tx_rx_buff_write('L');
-        }
-        else if(deleted_count > 0)
-        {
-            //remount... the user has deleted a file, and added a new one, it destroys our calculations and assumptions.
-            board_vfs_state |= (BOARD_VFS_ERROR_IDX_DEL << 4);
-            board_vfs_state |= BOARD_VFS_STATE_INVALID;
         }
         else
         {   
@@ -1217,15 +1207,6 @@ static void board_write_subdir(uint32_t sector_offset, const uint8_t *data, uint
             {
                 if(current_entry.filesize)
                 {
-                    tx_rx_buff_write('U');
-                    tx_rx_buff_write('0' + ((current_entry.filesize / 100)%10));
-                    tx_rx_buff_write('0' + ((current_entry.filesize / 10)%10));
-                    tx_rx_buff_write('0' + ((current_entry.filesize)%10));
-                    tx_rx_buff_write('C');
-                    tx_rx_buff_write('0' + ((cluster / 100)%10));
-                    tx_rx_buff_write('0' + ((cluster / 10)%10));
-                    tx_rx_buff_write('0' + ((cluster)%10));
-                    
                     lw->first_cluster &= ~UNKNOWN_SIZE_BIT;
                     
                     // if our optimisation was too harsh, we need to write the appropriate amount bytes to the file
@@ -1243,6 +1224,8 @@ static void board_write_subdir(uint32_t sector_offset, const uint8_t *data, uint
                     
                     lw->size = current_entry.filesize;
                     
+                    // we've received a final size for a file of unknown length, mark our file transfer status as finished.
+                    // We've filled in our unknowns.
                     if(fts)
                     {
                         free(fts);
@@ -1250,20 +1233,9 @@ static void board_write_subdir(uint32_t sector_offset, const uint8_t *data, uint
                     }
                 }
             }
-            else if(lw->first_cluster & FILE_DELETED_BIT)
-            {
-                //remount, the user has tried to delete and add a file...
-                board_vfs_state |= (BOARD_VFS_ERROR_IDX_DEL << 4);
-                board_vfs_state |= BOARD_VFS_STATE_INVALID;
-            }
             // for some inconvenient reason, mac OS likes to move things around...
             else if(lw->first_cluster != cluster)
-            {
                 lw->first_cluster = cluster;
-                tx_rx_buff_write('M');
-                tx_rx_buff_write('0' + ((cluster / 10)%10));
-                tx_rx_buff_write('0' + ((cluster)%10));
-            }
         }
         entry_offset++;
         validated_entries++;
