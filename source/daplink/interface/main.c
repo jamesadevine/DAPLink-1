@@ -158,6 +158,8 @@ static uint8_t data[SIZE_DATA];
 
 int jmx_result = -1;
 
+extern void jmx_packet_received(char*);
+
 __task void serial_process()
 {
     UART_Configuration config;
@@ -216,14 +218,40 @@ __task void serial_process()
             uint8_t c = 0;
             int read_count = 0;
                 
-            while((uart_read_data(&c, 1)) && read_count < len_data)
+            while(read_count < len_data && (uart_read_data(&c, 1)))
             {
                 char characters[2] = {jmx_previous(), c};
                 
+                //TODO handle escapes properly int previous_ret = jmx_result;
+                
                 jmx_result = jmx_state_track(c);
                 
-                if(!jmx_result)
+                if(characters[0] == '\xc0' && (characters[1] == 'A' || characters[1] == 'R' || characters[1] == 'C'))
+                {
+                    if(characters[1] == 'A')
+                        jmx_packet_received("stat_ack");
+                    
+                    if(characters[1] == 'R')
+                        jmx_packet_received("stat_retry");
+                    
+                    if(characters[1] == 'C')
+                        jmx_packet_received("stat_cancel");
+                    
+                    os_tsk_prio(main_task_id, MAIN_TASK_PRIORITY);
+                    os_tsk_prio(serial_task_id, SERIAL_TASK_PRIORITY);
+                    os_dly_wait(0);
                     continue;
+                }
+                else if(jmx_result == 0)
+                {
+                    os_tsk_prio(main_task_id, MAIN_TASK_PRIORITY);
+                    os_tsk_prio(serial_task_id, SERIAL_TASK_PRIORITY);
+                    os_dly_wait(0);
+                }
+                
+                if(jmx_result == -1)
+                    continue;
+                
                 
                 for(int i = 2 - jmx_result; i < 2; i++)
                     data[read_count++] = characters[i];
