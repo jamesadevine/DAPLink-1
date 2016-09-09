@@ -11,7 +11,6 @@ typedef struct FSRequestPacket_t
 	int len;
 	char mode[4 + NULL_TERMINATOR];
 	char format[4 + NULL_TERMINATOR];
-	char* base64;
 } FSRequestPacket;
 
 typedef struct DIRRequestPacket_t
@@ -24,6 +23,8 @@ typedef struct DIRRequestPacket_t
 typedef struct StatusPacket_t
 {
 	int code;
+	int window;
+	uint8_t* receipt;
 } StatusPacket;
 
 typedef struct UARTConfigPacket_t

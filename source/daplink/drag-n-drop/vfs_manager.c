@@ -262,6 +262,7 @@ void vfs_mngr_periodic(uint32_t elapsed_ms)
 
             util_assert(TRASNFER_FINISHED == file_transfer_state.transfer_state);
             vfs_user_disconnecting();
+
             break;
     }
 
@@ -346,21 +347,24 @@ void usbd_msc_write_sect(uint32_t sector, uint8_t *buf, uint32_t num_of_sectors)
     vfs_write(sector, buf, num_of_sectors);
     file_data_handler(sector, buf, num_of_sectors);
 #else
-    // if we have a file transfer in progress, why send it through the extended file system?
-    if(file_transfer_state.stream_started)
+    
+    bool data_handler = false;
+    
+    if(vfs_write(sector, buf, num_of_sectors) == -1)
+    {
+        // try this write through our file system, if it doesn't take, pass it through to the stream.
+        if(board_vfs_write(sector, buf, num_of_sectors) == -1)
+            data_handler = true;
+    }
+    
+    if(data_handler)
     {
         file_data_handler(sector, buf, num_of_sectors);
     
         if(TRASNFER_FINISHED == file_transfer_state.transfer_state || file_transfer_state.stream_optional_finish)
             board_vfs_reset();
     }
-    else if(vfs_write(sector, buf, num_of_sectors) == -1)
-    {
-        // try this write through our file system, if it doesn't take, pass it through to the stream.
-        if(board_vfs_write(sector, buf, num_of_sectors) == -1)
-            file_data_handler(sector, buf, num_of_sectors);
-    }
-        
+    
 #endif
 }
 

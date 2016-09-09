@@ -927,7 +927,6 @@ fail:
                 case SCSI_READ10:
                 case SCSI_READ12:
                     if (USBD_MSC_RWSetup()) {
-                        debug_msg("POO\n");
                         if ((USBD_MSC_CBW.bmFlags & 0x80) != 0) {
                             BulkStage = MSC_BS_DATA_IN;
                             USBD_MSC_MemoryRead();
@@ -999,7 +998,6 @@ fail:
         /* set EP to stay stalled */
         USBD_EndPointStall |=  1 << usbd_msc_ep_bulkout;
         BulkStage = MSC_BS_ERROR;
-        debug_msg("FAIL1\n");
     }
 }
 

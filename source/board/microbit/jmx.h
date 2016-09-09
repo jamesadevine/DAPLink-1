@@ -30,7 +30,6 @@
 #define IS_DIGIT(X) (X >= 48 && X < 58 )
 //#define MIN(a,b) (a < b ? a : b)
 
-
 enum JMXState {
 	J_STATE_NONE = 0x00,
 	J_STATE_INIT = 0x01,
@@ -56,7 +55,8 @@ enum JMXTokenState {
 	T_STATE_NONE = 0x00,
 	T_STATE_STRING = 0x01,
 	T_STATE_NUMBER = 0x02,
-	T_STATE_DYNAMIC_STRING = 0x04
+	T_STATE_DYNAMIC_STRING = 0x04,
+	T_STATE_STREAM_BUFFER = 0x08
 };
 
 enum SerialState {

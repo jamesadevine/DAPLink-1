@@ -42,8 +42,11 @@
 #include "jmx.h"
 
 // Reference to our main task
-OS_TID main_task_id;
-OS_TID serial_task_id;
+OS_TID main_task_id = 0;
+OS_TID serial_task_id = 0;
+
+//used for controlling when the usb serial thread can transmit
+uint8_t usb_tx_flag = 1;
 
 // USB busy LED state; when TRUE the LED will flash once using 30mS clock tick
 static uint8_t hid_led_usb_activity = 0;
@@ -219,22 +222,7 @@ __task void serial_process()
                 
                 jmx_result = jmx_state_track(c);
                 
-                //if we were previously digesting a packet, and the result was a success, signal the other thread.
-                if(jmx_result == 0)
-                {
-                    // if our jmx invocation didn't set our flag, additional processing is required,
-                    // pass control to the main_thread.
-                    if(os_evt_wait_or(FLAGS_JMX_DONE,0) == OS_R_TMO)
-                    {
-                        os_evt_set(FLAGS_JMX_PACKET, main_task_id);
-                        os_evt_wait_or(FLAGS_JMX_DONE, NO_TIMEOUT);
-                    }
-                    
-                    os_evt_clr(FLAGS_JMX_DONE, serial_task_id);
-                    continue;
-                }
-                
-                if(jmx_result == -1)
+                if(!jmx_result)
                     continue;
                 
                 for(int i = 2 - jmx_result; i < 2; i++)
@@ -247,12 +235,15 @@ __task void serial_process()
                     main_blink_cdc_led(MAIN_LED_OFF);
                 }
                 
-                rt_dly_wait(1);
+                os_dly_wait(1);
             }
         }
 
         //returns the number of buffered characters 
         len_data = uart_write_free();
+        
+        if(!usb_tx_flag)
+            continue;
 
         if (len_data > SIZE_DATA) {
             len_data = SIZE_DATA;

@@ -31,18 +31,15 @@ static uint8_t serial_state = STATE_IDLE;
 
 static char previous;					// 1
 
-extern void jmx_packet_received(char* identifier);
-
-void nop(void* data) {};
-void jmx_user_packet_received(char* identifier) /*__attribute((weak))*/ {}
-
-//TODO REPLACE WITH WEAK DEFINITION!
-#pragma comment(linker, "/alternatename:_jmx_packet_received=_jmx_user_packet_received")
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 extern void user_putc(char c);
+
+extern void jmx_packet_received(char*);
+
+void nop(void* data) { };
 #ifdef __cplusplus
 }
 #endif
@@ -146,7 +143,7 @@ int jmx_send(const char* identifier, void* data)
 				char result[MAX_JSON_NUMBER];
 				int number;
 				memcpy(&number, content, sizeof(int));
-				itoa(number, result);//_itoa(number, result, 10);
+				itoa(number, result);
 
 				for (uint8_t j = 0; j < strlen(result); j++)
 					user_putc(result[j]);
@@ -182,7 +179,6 @@ int jmx_configure_buffer(const char* identifier, void* data)
 	JMXActionTable* t = (JMXActionTable*)actionStore.actionTable[table_index];
 
 	*t->pointer_base = data;
-	memset(*t->pointer_base, 0, t->struct_size);
 
 	jmx_state |= J_STATE_USER_BUFFER;
 
@@ -232,7 +228,7 @@ int jmx_detect_key()
 	}
 	else if (a->type == T_STATE_DYNAMIC_STRING)
 	{
-		int16_t fieldLen = 0;
+		int fieldLen = 0;
 
 		// if the state is T_STATE_DYNAMIC_STRING, the action's buffer size is actually an index into the action table.
 		if (a->buffer_size > JMX_ACTION_COUNT)
@@ -381,6 +377,18 @@ void jmx_init(void)
   */
 int jmx_parse(char c)
 {
+	// a special case for the scenario where we have a streamed buffer after a JMX sequence
+	if (jmx_token_state & T_STATE_STREAM_BUFFER)
+	{
+		jmx_data_buffer[jmx_data_offset++] = c;
+
+        //success!
+		if (jmx_data_offset >= jmx_data_size)
+			return jmx_reset(false);
+        
+        return STATUS_OK;
+	}
+
 	switch (c)
 	{
 		case JMX_ESCAPE_CHAR:
@@ -389,7 +397,56 @@ int jmx_parse(char c)
 			if (jmx_token_state == T_STATE_NONE && jmx_parser_state == P_STATE_NONE)
 				previous = c;
 			else if (previous == OBJECT_END && (jmx_token_state == T_STATE_NONE || (jmx_token_state & T_STATE_NUMBER)))
+			{
+				JMXActionTable* t = (JMXActionTable*)actionStore.actionTable[jmx_action_index];
+
+				//determine if this packet anticpates a stream after it...
+				if (t->packet_type == BUFFERED_ACTION)
+				{
+					JMXActionItem* a = NULL;
+					for (int i = 0; i < JMX_ACTION_COUNT; i++)
+						if (t->actions[i].type == T_STATE_STREAM_BUFFER)
+						{
+							a = &t->actions[i];
+							break;
+						}
+
+					// if we have found a valid stream_buffer entry, determine it's size based on its dependency.
+					if (a)
+					{
+						int fieldLen = 0;
+
+						// if the state is T_STATE_DYNAMIC_STRING, the action's buffer size is actually an index into the action table.
+						if (a->buffer_size > JMX_ACTION_COUNT)
+							return jmx_reset(true);
+
+						JMXActionItem* dependency = &t->actions[a->buffer_size];
+
+						// if the data pointed to by this action is not an int, we can't accept that dependency.
+						if (dependency->type != T_STATE_NUMBER)
+							return jmx_reset(true);
+
+						uint8_t* base = *t->pointer_base;
+
+						//get the value pointed to by our action
+						memcpy(&fieldLen, base + dependency->offset, sizeof(fieldLen));
+
+						uint8_t** buffer_pointer = base + a->offset;
+
+						// we should get fieldLen bytes of data after this packet, set our parser state accordingly
+						if (fieldLen && *buffer_pointer)
+						{
+							jmx_token_state |= T_STATE_STREAM_BUFFER;
+							jmx_data_buffer = *buffer_pointer;
+							jmx_data_size = fieldLen;
+							jmx_data_offset = 0;
+							return STATUS_OK;
+						}
+					}
+				}
+
 				return jmx_reset(false);
+			}
 			else
 				return jmx_reset(true);
 			

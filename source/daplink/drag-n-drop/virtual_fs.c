@@ -55,7 +55,6 @@ static uint32_t read_dir(uint32_t offset, uint8_t *data, uint32_t size);
 static void write_dir(uint32_t offset, const uint8_t *data, uint32_t size);
 static void file_change_cb_stub(const vfs_filename_t filename, vfs_file_change_t change,
                                 vfs_file_t file, vfs_file_t new_file_data);
-static uint32_t cluster_to_sector(uint32_t cluster_idx);
 static bool filename_valid(const vfs_filename_t filename);
 static bool filename_character_valid(char character);
 static void set_init_done(void);
@@ -685,7 +684,7 @@ static void file_change_cb_stub(const vfs_filename_t filename, vfs_file_change_t
     // Do nothing
 }
 
-static uint32_t cluster_to_sector(uint32_t cluster_idx)
+uint32_t cluster_to_sector(uint32_t cluster_idx)
 {
     uint32_t sectors_before_data = data_start / mbr.bytes_per_sector;
     return sectors_before_data + (cluster_idx - 2) * mbr.sectors_per_cluster;
