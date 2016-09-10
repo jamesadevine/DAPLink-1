@@ -48,6 +48,13 @@ void uart_clear_rx(void)
     read_buffer.cnt_out = 0;
 }
 
+void uart_put_tx(char c)
+{   
+    read_buffer.data[read_buffer.idx_in++] = c;
+    read_buffer.idx_in &= (UART_BUFFER_SIZE - 1);
+    read_buffer.cnt_in++;
+}
+
 void clear_buffers(void)
 {
     memset((void *)&read_buffer, 0xBB, sizeof(read_buffer.data));
