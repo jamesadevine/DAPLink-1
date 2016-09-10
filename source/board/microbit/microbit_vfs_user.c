@@ -58,7 +58,7 @@
 
 #define UNKNOWN_SIZE_BIT            0x1000
 #define FILE_DELETED_BIT            0x2000
-#define FILE_NEW_BIT                0x4000
+#define FILE_FRAGEMENTED_BIT        0x4000
 
 
 static const UART_Configuration init_config = {
@@ -206,6 +206,7 @@ typedef struct FileTransferState
 {
     LWDirectoryEntry_t* currentEntry;
     uint16_t next_sector;
+    uint32_t sector_count;
 }FileTransferState_t;
 
 FileTransferState_t* fts = NULL;
@@ -421,14 +422,14 @@ int jmx_file_request(char* filename, int size, int offset, char mode, bool statu
 int target_get_file(char* filename, int size, int offset, uint8_t* buf)
 {
     
-    print_num("READ", size);
-    print_num("OFFSET", offset);
-    
-	int ret = jmx_file_request(filename, size, offset, 'r', true, size, buf);
-    
-    print_num("RESULT ", ret);
+	int ret = jmx_file_request(filename, size, offset, 'r', true, size, buf);   
     
     usb_tx_resume();
+    
+    /*print_num("RESULT ", ret);
+    
+    print_num("READ", size);
+    print_num("OFFSET", offset);*/
     
     if(ret == MICROBIT_JMX_SUCCESS)
         return size;
@@ -856,21 +857,6 @@ LWDirectoryEntry_t* getEntryByShortName(const char* name)
     return NULL;
 }
 
-LWDirectoryEntry_t* get_next_new()
-{
-    LWDirectoryEntry_t* lw = NULL;
-    
-    for(int i = 0; i < entries_count; i++)
-    {
-        lw = ((LWDirectoryEntry_t*)microbit_page_buffer) + i;
-        
-        if(lw->first_cluster & FILE_NEW_BIT)
-            return lw;
-    }
-    
-    return NULL;
-}
-
 
 int board_vfs_get_size(void)
 {
@@ -978,13 +964,21 @@ int board_vfs_write(uint32_t requested_sector, uint8_t *buf, uint32_t num_sector
     
     print_num("CLUSTER:", first + microbit_fs_off);
     
+    if(is_junk_cluster(first + microbit_fs_off))
+        return -1;
+    
     // if we have an ongoing file transfer.
     if(fts)
     {
         entry = fts->currentEntry;
         
         // first time processing this file transfer request.
-        if(requested_sector == fts->next_sector || fts->next_sector == 0)
+        if(fts->next_sector == 0)
+        {
+            fts->next_sector = requested_sector + 1;
+            fts->sector_count = 0;
+        }
+        else if(requested_sector == fts->next_sector)
         {    // track our sector for next time
             fts->next_sector = requested_sector + 1;
             // this is an out of sequence write, it breaks our assumption of contiguity with writes, and structure.
@@ -1026,12 +1020,16 @@ int board_vfs_write(uint32_t requested_sector, uint8_t *buf, uint32_t num_sector
 	}
     
 	int bytes_written = 0;
-    int cluster_offset = ((first + microbit_fs_off) - entry->first_cluster) * VFS_CLUSTER_SIZE;
-    int byte_offset = cluster_offset + (microbit_block_offset * VFS_SECTOR_SIZE);
+
+    int byte_offset = fts->sector_count * VFS_SECTOR_SIZE;
+    
+    fts->sector_count += num_sectors;
     
 	int write_end = VFS_SECTOR_SIZE * num_sectors;
 	int bytes_parsed = 0;
     
+    print_num("BO ",byte_offset);
+    print_num("WE ",write_end);
 	if (entry->first_cluster & UNKNOWN_SIZE_BIT)
 	{
         uint32_t valid_bytes = 0;
@@ -1092,22 +1090,11 @@ int board_vfs_write(uint32_t requested_sector, uint8_t *buf, uint32_t num_sector
     {
         int size = MIN(entry->size - (byte_offset + bytes_written), write_end);
         
-        // this will complete our file transfer
-        if(entry->size - (byte_offset + bytes_written) < write_end)
+        // this is the last write
+        if(entry->size -(byte_offset + bytes_written) < write_end)
         {
-            LWDirectoryEntry_t* next = get_next_new();
-            
-            if(next)
-            {
-                next->first_cluster &= ~FILE_NEW_BIT;
-                fts->currentEntry = next;
-                fts->next_sector = 0;
-            }
-            else if(fts)
-            {
-                free(fts);
-                fts = NULL;
-            }
+            free(fts);
+            fts = NULL;
         }
         
         return target_write_buf((char*) entry->filename, size, byte_offset, buf);
@@ -1154,9 +1141,16 @@ static void board_write_subdir(uint32_t sector_offset, const uint8_t *data, uint
             {
                 int ret = jmx_file_request((char *)lw->filename, 0, 0, 'd', true, 0, NULL);
                 
-                lw->first_cluster |= FILE_DELETED_BIT;
                 
                 usb_tx_resume();
+                
+                
+                
+                for(int i = 0; i < 11; i++)
+                    uart_put_tx(lw->filename[i]);
+                
+                print_num("DEL ", lw->first_cluster);
+                lw->first_cluster |= FILE_DELETED_BIT;
             }
             
             entry_offset++;
@@ -1243,9 +1237,6 @@ static void board_write_subdir(uint32_t sector_offset, const uint8_t *data, uint
                     fts = NULL;
                 }
             }
-            //    dest->first_cluster |= FILE_NEW_BIT;
-            
-            // we've added a new entry, increment
             entries_count++;
         }
         else
@@ -1307,6 +1298,9 @@ static void board_write_subdir(uint32_t sector_offset, const uint8_t *data, uint
             
             lw->first_cluster = cluster | flags;
             
+            if(lw->size == 0)
+                lw->first_cluster |= UNKNOWN_SIZE_BIT;
+            
             // we are about to get a sequence of writes...
             if(lw->size != current_entry.filesize)
             {   
@@ -1319,15 +1313,6 @@ static void board_write_subdir(uint32_t sector_offset, const uint8_t *data, uint
                     fts->currentEntry = lw;
                     fts->next_sector = 0;
                 }
-/*                else if (fts->next_sector > 0)
-                {
-                    // blow up, file transfer in progress, we can't handle simulataneous writes.
-                    board_vfs_state |= (BOARD_VFS_ERROR_IDX_MULTI << 4);
-                    board_vfs_state |= BOARD_VFS_STATE_INVALID;
-                    
-                    free(fts);
-                    fts = NULL;
-                }*/
             }   
         }
         entry_offset++;
