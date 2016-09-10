@@ -125,10 +125,10 @@ static int microbit_get_flash_meta(uint32_t * flash_start, uint32_t * flash_size
 static uint32_t microbit_flash_start = 0;
 static uint32_t microbit_flash_size = 0;
 
+static uint16_t first = 0;
+static uint16_t entries_count = 0;
 
-
-static int first = 0;
-/*static*/ int entries_count = 0;
+static uint16_t valid_dirents = 0;
 
 static const FatDirectoryEntry_t test_file_entry = {
     /*uint8_t[11] */ .filename = {""},
@@ -162,20 +162,13 @@ static const FatDirectoryEntry_t test_file_entry = {
 
 #define MSC_SPIN_TIMEOUT            10000000
 #define USB_PROCESS_TIMEOUT_MS      100
-#define TIMEOUT_SCALAR               5
+#define TIMEOUT_SCALAR              7
 
 #define WINDOW_RET_ACK              1
 #define WINDOW_RET_RETRY            2
 #define WINDOW_RET_CANCEL           3
 
 /*static*/ uint8_t board_vfs_state = BOARD_VFS_STATE_BOOT;
-
-static const char* microbit_board_errors[4] = {
-    "Sorry - I can't handle writing more than one file at a time from this computer.",
-    "That file copy didn't seem to work - try again?",
-    "That was one byte too many - I'm really full!",
-    "I don't what was wrong with me, but I feel better now :)"
-};
 
 /*static*/ uint8_t jmx_flag = 0;
 
@@ -185,6 +178,16 @@ static uint16_t junk_clusters[JUNK_CLUSTER_COUNT] = { 0 };
 static uint8_t junk_cluster_index = 0;
 
 uint8_t window_ret_status = 0;
+
+
+static const char* microbit_board_errors[4] = {
+    "Sorry - I can't handle writing more than one file at a time from this computer.",
+    "That file copy didn't seem to work - try again?",
+    "That was one byte too many - I'm really full!",
+    "I don't what was wrong with me, but I feel better now :)"
+};
+
+
 
 typedef struct LWDirectoryEntry
 {
@@ -216,23 +219,6 @@ OS_MUT jmx_mutex;
 #ifdef __cplusplus
 extern "C" {
 #endif
-    
-#ifndef TARGET_FLASH_ERASE_CHIP_OVERRIDE
-    
-#define BUFF_SIZE 512
-    
-static char tx_rx_buffer[BUFF_SIZE];
-static int tx_rx_buffer_offset = 0;
-#endif    
-void tx_rx_buff_write(char c)
-{
-#ifndef TARGET_FLASH_ERASE_CHIP_OVERRIDE
-    if(tx_rx_buffer_offset > BUFF_SIZE-1)
-        return;
-    
-    tx_rx_buffer[tx_rx_buffer_offset++] = c;
-#endif 
-}
 
 int sync_jmx_state_track(char c)
 {
@@ -354,49 +340,30 @@ int wait_for_reply(uint8_t bit, bool shorter)
     
     int cd = MSC_SPIN_TIMEOUT;
     
-    bool usb = false;
-    
-    if(serial_task_id)
-    {
-        usb = true;
-        cd = 10;//USB_PROCESS_TIMEOUT_MS;
-    }
-    
     if(shorter)
         cd = cd / TIMEOUT_SCALAR;
     
+    int ret = 1;
     
-    
-	while (cd > 0 && !(jmx_flag & bit))
-	{
+    while (!serial_task_id && cd > 0 && !(jmx_flag & bit))
+    {
         // check if our usb serial task is up and running yet, if not process here
-        if(!serial_task_id)
-        {
-            if (uart_read_data(&c,1))
-                jmx_parse(c);
-        }
-        else
-        {
-            //if we've moved from spinning, to usb serial processing uart
-            if(!usb)
-            {
-                usb = true;
-                cd = USB_PROCESS_TIMEOUT_MS;
-            }
-            
-            os_tsk_prio(serial_task_id, MAIN_TASK_PRIORITY);
-            os_tsk_prio(main_task_id, SERIAL_TASK_PRIORITY);
-            os_dly_wait(0);
-        }
+        if (uart_read_data(&c,1))
+            jmx_parse(c);
+        
         cd--;
-	}
+    }
     
+    // block for two seconds, each system interval is 10 ms
+    if(serial_task_id && os_evt_wait_or(FLAGS_JMX_PACKET, 200) == OS_R_TMO)
+        ret = 0;
+        
     jmx_flag &= ~bit;
     
     if(cd <= 0)
-        return 0;
+        ret = 0;
     
-    return 1;
+    return ret;
 }
 
 void usb_tx_block()
@@ -423,16 +390,14 @@ int jmx_file_request(char* filename, int size, int offset, char mode, bool statu
 	local_fsr_send.offset = offset;
 	local_fsr_send.len = size;
     
+    StatusPacket status;
+    memset(&status, 0, sizeof(StatusPacket));
+    status.code = -4;
+    status.window = window;
+    status.receipt = buf;
+    
     if(status_set)
-    {
-        StatusPacket status;
-        memset(&status, 0, sizeof(StatusPacket));
-        status.code = 1;
-        status.window = window;
-        status.receipt = buf;
-
         jmx_configure_buffer("status", &status);
-    }
 
     // gain absolute control over the hardware uart
     usb_tx_block();
@@ -442,7 +407,7 @@ int jmx_file_request(char* filename, int size, int offset, char mode, bool statu
     if(status_set)
         wait_for_reply(JMX_STATUS_PACKET, false);
     
-    return 1;//status.code;
+    return status.code;
 }
 
 #define TOTAL_BUFFER_SIZE 36
@@ -536,31 +501,21 @@ int target_write_byte(char* filename, int size, int offset, uint8_t byte)
         
         for(int i = 0; i < EFFECTIVE_BUFF_SIZE; i++)
             *checksum += tx_buf[i];
-
-        StatusPacket status;
         
         while(byte_count < size)
         {
             int tx_size = MIN(EFFECTIVE_BUFF_SIZE, size - byte_count);
             
-            status.code = 1;
-            status.window = TOTAL_BUFFER_SIZE;
-            status.receipt = NULL;
-            
-            jmx_configure_buffer("status", &status);
-            
-            status.code = 1;
-            
             uart_write_data(tx_buf, TOTAL_BUFFER_SIZE);
             
-            if(!wait_for_reply(JMX_STATUS_PACKET, false) || status.code < MICROBIT_JMX_REPEAT)
+            if(!wait_for_reply(JMX_WINDOW_RET, false) || window_ret_status == WINDOW_RET_CANCEL)
             {
                 board_vfs_state |= (BOARD_VFS_ERROR_IDX_FULL << 4);
                 board_vfs_state |= BOARD_VFS_STATE_INVALID;
                 break;
             }
             
-            if(status.code == MICROBIT_JMX_SUCCESS)
+            if(window_ret_status == WINDOW_RET_ACK)
                 byte_count += tx_size;
         }
     }
@@ -595,6 +550,8 @@ void target_get_entry(int entry, DIRRequestPacket* dir)
 
 void ls()
 {
+    
+    
     memset(microbit_page_buffer, 0, MICROBIT_PAGE_BUFFER_SIZE);
     entries_count = 0;
     
@@ -680,7 +637,6 @@ void board_vfs_add_files() {
     }
     
     if(!(board_vfs_state & BOARD_VFS_STATE_INVALID))
-        // 2000000
         wait_for_reply(JMX_INIT_PACKET, true);
     else
     {
@@ -958,8 +914,11 @@ int board_vfs_read(uint32_t requested_sector, uint8_t *buf, uint32_t num_sectors
 
 int board_vfs_write(uint32_t requested_sector, uint8_t *buf, uint32_t num_sectors)
 {
-    if(!(board_vfs_state & BOARD_VFS_STATE_INIT) || board_vfs_state & BOARD_VFS_STATE_INVALID)
+    if(!(board_vfs_state & BOARD_VFS_STATE_INIT))
         return -1;
+    
+    if(board_vfs_state & BOARD_VFS_STATE_INVALID)
+        return 0;
     
     //get the usage of the DAPLink VFS.
     uint32_t total_vfs_sectors = vfs_get_virtual_usage() / VFS_SECTOR_SIZE;
@@ -971,10 +930,7 @@ int board_vfs_write(uint32_t requested_sector, uint8_t *buf, uint32_t num_sector
     int microbit_block_offset = (requested_sector - total_vfs_sectors) % 8;
     
     if(is_junk_cluster(first + microbit_fs_off))
-    {
-        //tx_rx_buff_write('R');
         return -1;
-    }
 
     LWDirectoryEntry_t* entry = NULL;
     
@@ -1088,7 +1044,9 @@ int board_vfs_write(uint32_t requested_sector, uint8_t *buf, uint32_t num_sector
         // if this sector has different bytes in it, we can assume it's valid, write our previous n characters, and this sector's valid bytes.
         if(valid_bytes > 0 && valid_start >= 0)
         {
-            entry->size += target_write_byte((char*)entry->filename, previous_char_count, entry->size, previous_char);
+            if(previous_char_count > 0)
+                entry->size += target_write_byte((char*)entry->filename, previous_char_count, entry->size, previous_char);
+            
             entry->size += target_write_buf((char*)entry->filename, valid_bytes, entry->size, buf + valid_start);
         }
         else
@@ -1112,11 +1070,12 @@ static void board_write_subdir(uint32_t sector_offset, const uint8_t *data, uint
 
     int entry_offset = dirs_per_sector * sector_offset;
     
-    int validated_entries = 0;
+    if(entry_offset == 0)
+        valid_dirents = 0;
     
     uint32_t num_entries = num_sectors * VFS_SECTOR_SIZE / sizeof(FatDirectoryEntry_t);
     
-    while(entry_offset < num_entries)
+    while(valid_dirents < entries_count && entry_offset < num_entries)
     {
         FatDirectoryEntry_t current_entry = new_entry[entry_offset];
         
@@ -1146,6 +1105,7 @@ static void board_write_subdir(uint32_t sector_offset, const uint8_t *data, uint
             }
             
             entry_offset++;
+            valid_dirents++;
             continue;
         }
         
@@ -1265,10 +1225,14 @@ static void board_write_subdir(uint32_t sector_offset, const uint8_t *data, uint
             }
             // for some inconvenient reason, mac OS likes to move things around...
             else if(lw->first_cluster != cluster)
+            {
                 lw->first_cluster = cluster;
+            }
+            else
+                lw->size = current_entry.filesize;
         }
         entry_offset++;
-        validated_entries++;
+        valid_dirents++;
     }
 }
 

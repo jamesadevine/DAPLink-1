@@ -107,7 +107,7 @@ int jmx_send(const char* identifier, void* data)
 
 	JMXActionTable* t = (JMXActionTable*)actionStore.actionTable[table_index];
 
-	user_putc((char)SLIP_END);
+	user_putc((char)JMX_ESCAPE_CHAR);
 
 	user_putc((char)OBJECT_START);
 
@@ -154,7 +154,7 @@ int jmx_send(const char* identifier, void* data)
 	user_putc((char)OBJECT_END);
 	user_putc((char)OBJECT_END);
 
-	user_putc((char)SLIP_END);
+	user_putc((char)JMX_END_CHAR);
 
 	return STATUS_SUCCESS;
 }
@@ -381,22 +381,18 @@ int jmx_parse(char c)
 	if (jmx_token_state & T_STATE_STREAM_BUFFER)
 	{
 		jmx_data_buffer[jmx_data_offset++] = c;
-
-        //success!
+	
+		//success!
 		if (jmx_data_offset >= jmx_data_size)
 			return jmx_reset(false);
-        
-        return STATUS_OK;
+		 
+		return STATUS_OK;
 	}
 
 	switch (c)
 	{
-		case JMX_ESCAPE_CHAR:
-
-			//if we are here, and processing a packet, we do not expect an escape character...
-			if (jmx_token_state == T_STATE_NONE && jmx_parser_state == P_STATE_NONE)
-				previous = c;
-			else if (previous == OBJECT_END && (jmx_token_state == T_STATE_NONE || (jmx_token_state & T_STATE_NUMBER)))
+		case JMX_END_CHAR:
+			if (previous == OBJECT_END && (jmx_token_state == T_STATE_NONE || (jmx_token_state & T_STATE_NUMBER)))
 			{
 				JMXActionTable* t = (JMXActionTable*)actionStore.actionTable[jmx_action_index];
 
@@ -426,12 +422,12 @@ int jmx_parse(char c)
 						if (dependency->type != T_STATE_NUMBER)
 							return jmx_reset(true);
 
-						uint8_t* base = *t->pointer_base;
+						uint8_t* base = (uint8_t *)*t->pointer_base;
 
 						//get the value pointed to by our action
 						memcpy(&fieldLen, base + dependency->offset, sizeof(fieldLen));
 
-						uint8_t** buffer_pointer = base + a->offset;
+						uint8_t** buffer_pointer = (uint8_t**)(base + a->offset);
 
 						// we should get fieldLen bytes of data after this packet, set our parser state accordingly
 						if (fieldLen && *buffer_pointer)
@@ -447,6 +443,14 @@ int jmx_parse(char c)
 
 				return jmx_reset(false);
 			}
+			else
+				return jmx_reset(true);
+
+		case JMX_ESCAPE_CHAR:
+
+			//if we are here, and processing a packet, we do not expect an escape character...
+			if (jmx_token_state == T_STATE_NONE && jmx_parser_state == P_STATE_NONE)
+				previous = c;
 			else
 				return jmx_reset(true);
 			

@@ -1,10 +1,6 @@
 #include <stdint.h>
 
-#ifndef TARGET_FLASH_ERASE_CHIP_OVERRIDE
-#define  MICROBIT_PAGE_BUFFER_SIZE  1024
-#else
 #define MICROBIT_PAGE_BUFFER_SIZE   2048
-#endif
 
 extern uint8_t microbit_page_buffer[MICROBIT_PAGE_BUFFER_SIZE];
 

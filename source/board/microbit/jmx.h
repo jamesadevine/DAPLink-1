@@ -4,7 +4,8 @@
 #include "SLIP.h"
 #include <stdint.h>
 
-#define JMX_ESCAPE_CHAR			SLIP_END
+#define JMX_ESCAPE_CHAR			SLIP_ESC
+#define JMX_END_CHAR			SLIP_END
 
 #define OBJECT_START			'{'
 #define OBJECT_END				'}'

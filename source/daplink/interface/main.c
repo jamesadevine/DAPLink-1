@@ -222,11 +222,9 @@ __task void serial_process()
             {
                 char characters[2] = {jmx_previous(), c};
                 
-                //TODO handle escapes properly int previous_ret = jmx_result;
-                
                 jmx_result = jmx_state_track(c);
                 
-                if(characters[0] == '\xc0' && (characters[1] == 'A' || characters[1] == 'R' || characters[1] == 'C'))
+                if(characters[0] == SLIP_ESC && (characters[1] == 'A' || characters[1] == 'R' || characters[1] == 'C'))
                 {
                     if(characters[1] == 'A')
                         jmx_packet_received("stat_ack");
@@ -237,21 +235,32 @@ __task void serial_process()
                     if(characters[1] == 'C')
                         jmx_packet_received("stat_cancel");
                     
-                    os_tsk_prio(main_task_id, MAIN_TASK_PRIORITY);
-                    os_tsk_prio(serial_task_id, SERIAL_TASK_PRIORITY);
-                    os_dly_wait(0);
+                    os_evt_set(FLAGS_JMX_PACKET, main_task_id);
                     continue;
                 }
                 else if(jmx_result == 0)
-                {
-                    os_tsk_prio(main_task_id, MAIN_TASK_PRIORITY);
-                    os_tsk_prio(serial_task_id, SERIAL_TASK_PRIORITY);
-                    os_dly_wait(0);
-                }
+                    os_evt_set(FLAGS_JMX_PACKET, main_task_id);
                 
                 if(jmx_result == -1)
                     continue;
                 
+                // SLIP escape sequence detection...
+                if(jmx_result == 2 && is_slip_character(characters[0]) == ESC)
+                {
+                    int ret = is_slip_character(characters[1]);
+                    
+                    if(ret == ESC_END)
+                    {
+                        characters[1] = SLIP_END;
+                        jmx_result = 1;
+                    }
+                    
+                    if(ret == ESC_ESC)
+                    {
+                        characters[1] = SLIP_ESC;
+                        jmx_result = 1;
+                    }
+                }
                 
                 for(int i = 2 - jmx_result; i < 2; i++)
                     data[read_count++] = characters[i];
@@ -262,8 +271,6 @@ __task void serial_process()
                 if (USBD_CDC_ACM_DataSend(data , read_count)) {
                     main_blink_cdc_led(MAIN_LED_OFF);
                 }
-                
-                os_dly_wait(1);
             }
         }
 
