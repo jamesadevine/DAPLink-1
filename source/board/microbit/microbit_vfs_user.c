@@ -202,6 +202,8 @@ typedef struct LWDirectoryEntry
     //wasting one byte...
 }LWDirectoryEntry_t;
 
+#define BOARD_VFS_UPPER_LIMIT       (MICROBIT_PAGE_BUFFER_SIZE / sizeof(LWDirectoryEntry_t))
+
 typedef struct FileTransferState
 {
     LWDirectoryEntry_t* currentEntry;
@@ -568,7 +570,7 @@ void ls()
     entries_count = 0;
     
     // a maximum of 85 entries, allocate our cluster, add our hooks
-    vfs_create_subdir("FILES      ", 85, board_read_subdir, board_write_subdir);
+    vfs_create_subdir("FILES      ", BOARD_VFS_UPPER_LIMIT, board_read_subdir, board_write_subdir);
     //uart_debug('P');
     DIRRequestPacket dir;
     
@@ -576,7 +578,7 @@ void ls()
     
     usb_tx_block();
     
-    while (!done)
+    while (!done && entries_count < BOARD_VFS_UPPER_LIMIT)
     {
         target_get_entry(entries_count, &dir);
         
@@ -718,6 +720,8 @@ void transform_name(char* orig, char* dest)
     
     int orig_offset = 0;
     int dest_offset = 0;
+    
+    
     while(orig_offset < orig_len && orig[orig_offset] != '.' && dest_offset < 8)
     {
         if (orig[orig_offset] != ' ')   
@@ -757,17 +761,22 @@ void transform_name(char* orig, char* dest)
     for(int i = 0; i < entries_count; i++)
     {
         LWDirectoryEntry_t* lw = ((LWDirectoryEntry_t*)microbit_page_buffer) + i;
+        
         if(strncmp((char *)lw->filename,orig, MIN(basis_len, strnlen((char*)lw->filename, 16))) == 0)
             name_count++;
+        
+        if(strncmp((char*)lw->filename, orig, 16))
+            break;
     }
     
     if(name_count > 1)
     {
         dest[6] = '~';
+        
         if(name_count > 9)
             dest[5] ='~';
     
-        dest[7] = '0' + (name_count % 9);
+        dest[7] = '0' + ((name_count - 1) % 9);
     }
 }
 
