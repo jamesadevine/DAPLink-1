@@ -564,14 +564,12 @@ void target_get_entry(int entry, DIRRequestPacket* dir)
 
 void ls()
 {
-    
-    
     memset(microbit_page_buffer, 0, MICROBIT_PAGE_BUFFER_SIZE);
     entries_count = 0;
     
     // a maximum of 85 entries, allocate our cluster, add our hooks
     vfs_create_subdir("FILES      ", BOARD_VFS_UPPER_LIMIT, board_read_subdir, board_write_subdir);
-    //uart_debug('P');
+ 
     DIRRequestPacket dir;
     
     bool done = false;
@@ -580,6 +578,7 @@ void ls()
     
     while (!done && entries_count < BOARD_VFS_UPPER_LIMIT)
     {
+        memset(&dir,0, sizeof(DIRRequestPacket));
         target_get_entry(entries_count, &dir);
         
         if (dir.entry < 0 || dir.size < 0)

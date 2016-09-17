@@ -156,9 +156,8 @@ os_mbx_declare(serial_mailbox, 20);
 #define SIZE_DATA (64)
 static uint8_t data[SIZE_DATA];
 
-int jmx_result = -1;
-
 extern void jmx_packet_received(char*);
+int jmx_result = -1;
 
 __task void serial_process()
 {
@@ -166,7 +165,13 @@ __task void serial_process()
     int32_t len_data = 0;
     void *msg;
 
+    uint8_t board_vfs = board_vfs_enabled();
+    uint8_t usb_connected = 0;
+    
     while (1) {
+        
+        board_vfs = board_vfs_enabled();
+        
         // Check our mailbox to see if we need to set anything up with the UART
         // before we do any sending or receiving
         if (os_mbx_wait(&serial_mailbox, &msg, 0) == OS_R_OK) {
@@ -175,23 +180,29 @@ __task void serial_process()
             // to the user side application running on the target.
             // JMX is in use, and any change of state of the uart interface 
             // would be bad...
-            int board_vfs = board_vfs_enabled();
+            
             
             switch ((SERIAL_MSG)(unsigned)msg) {
                 case SERIAL_INITIALIZE:
                     if(!board_vfs)
                         uart_initialize();
+                    
+                    //
                     break;
 
                 case SERIAL_UNINITIALIZE:
                     if(!board_vfs)
                         uart_uninitialize();
+                    
+                    usb_connected = 0;
                     break;
-
+                    
                 case SERIAL_RESET:
                     
                     if(!board_vfs)
                         uart_reset();
+                    
+                    usb_connected = 1;
                     break;
 
                 case SERIAL_SET_CONFIGURATION:
@@ -213,11 +224,68 @@ __task void serial_process()
             len_data = SIZE_DATA;
         }
         
-        if (len_data) {
-            
-            uint8_t c = 0;
-            int read_count = 0;
+        uint8_t c = 0;
+        int read_count = 0;
+        
+        // if we aren't connected and our VFS is enabled, we digest anyway...
+        // if we are connected and our VFS is enabled, we digest
+        // if we aren't connected and our VFS is disabled, do nothing
+        // this read is not contrained by len_data...
+        // we do a best effort copy into our usb serial buffer
+        if(board_vfs && !usb_connected)
+        {
+            while(read_count < SIZE_DATA && uart_read_data(&c,1))
+            {
+                char characters[2] = {jmx_previous(), c};
                 
+                jmx_result = jmx_state_track(c);
+                
+                if(characters[0] == SLIP_ESC && (characters[1] == 'A' || characters[1] == 'R' || characters[1] == 'C'))
+                {
+                    if(characters[1] == 'A')
+                        jmx_packet_received("stat_ack");
+                    
+                    if(characters[1] == 'R')
+                        jmx_packet_received("stat_retry");
+                    
+                    if(characters[1] == 'C')
+                        jmx_packet_received("stat_cancel");
+                    
+                    os_evt_set(FLAGS_JMX_PACKET, main_task_id);
+                    continue;
+                }
+                else if(jmx_result == 0)
+                    os_evt_set(FLAGS_JMX_PACKET, main_task_id);
+                
+                if(jmx_result == -1)
+                    continue;
+                
+                // SLIP escape sequence detection...
+                if(jmx_result == 2 && is_slip_character(characters[0]) == ESC)
+                {
+                    int ret = is_slip_character(characters[1]);
+                    
+                    if(ret == ESC_END)
+                    {
+                        characters[1] = SLIP_END;
+                        jmx_result = 1;
+                    }
+                    
+                    if(ret == ESC_ESC)
+                    {
+                        characters[1] = SLIP_ESC;
+                        jmx_result = 1;
+                    }
+                }
+                
+                for(int i = 2 - jmx_result; i < 2; i++)
+                    if(read_count + 1 < SIZE_DATA)
+                        data[read_count++] = characters[i];
+            }
+        }
+        // this read is constrained by len_data
+        else if(board_vfs && usb_connected)
+        {
             while(read_count < len_data && (uart_read_data(&c, 1)))
             {
                 char characters[2] = {jmx_previous(), c};
@@ -263,14 +331,19 @@ __task void serial_process()
                 }
                 
                 for(int i = 2 - jmx_result; i < 2; i++)
-                    data[read_count++] = characters[i];
+                    if(read_count + 1 < SIZE_DATA)
+                        data[read_count++] = characters[i];
             }
-            
-            if(read_count)
-            {
-                if (USBD_CDC_ACM_DataSend(data , read_count)) {
-                    main_blink_cdc_led(MAIN_LED_OFF);
-                }
+                
+        }
+        // this read caters for legacy firmware
+        else if(len_data && !board_vfs)
+            read_count = uart_read_data(data, len_data);
+        
+        if(read_count)
+        {
+            if (USBD_CDC_ACM_DataSend(data, read_count)) {
+                main_blink_cdc_led(MAIN_LED_OFF);
             }
         }
 
