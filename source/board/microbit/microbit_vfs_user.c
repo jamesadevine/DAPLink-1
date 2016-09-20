@@ -891,7 +891,7 @@ int board_vfs_remount_req(void)
 
 int board_vfs_enabled(void)
 {
-    return (board_vfs_state & BOARD_VFS_STATE_INIT);
+    return (board_vfs_state & BOARD_VFS_STATE_INIT) || (board_vfs_state & BOARD_VFS_STATE_FLASH);
 }
 
 int board_vfs_read(uint32_t requested_sector, uint8_t *buf, uint32_t num_sectors)

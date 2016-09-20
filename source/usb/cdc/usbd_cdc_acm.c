@@ -54,6 +54,11 @@ CDC_LINE_CODING line_coding;           /*!< Communication settings */
 /* end of group USBD_CDC_ACM_GLOBAL_VAR */
 
 
+int terminal_connected(void)
+{
+	return control_line_state & 0x01;
+}
+
 /* Functions that should be provided by user to use standard Virtual COM port
    functionality                                                              */
 __weak int32_t USBD_CDC_ACM_PortInitialize(void)

@@ -166,12 +166,13 @@ __task void serial_process()
     void *msg;
 
     uint8_t board_vfs = board_vfs_enabled();
-    uint8_t usb_connected = 0;
+    uint8_t usb_connected = terminal_connected();
     
     while (1) {
         
         board_vfs = board_vfs_enabled();
-        
+        usb_connected = terminal_connected();
+		
         // Check our mailbox to see if we need to set anything up with the UART
         // before we do any sending or receiving
         if (os_mbx_wait(&serial_mailbox, &msg, 0) == OS_R_OK) {
@@ -193,16 +194,13 @@ __task void serial_process()
                 case SERIAL_UNINITIALIZE:
                     if(!board_vfs)
                         uart_uninitialize();
-                    
-                    usb_connected = 0;
                     break;
                     
                 case SERIAL_RESET:
                     
                     if(!board_vfs)
                         uart_reset();
-                    
-                    usb_connected = 1;
+					
                     break;
 
                 case SERIAL_SET_CONFIGURATION:

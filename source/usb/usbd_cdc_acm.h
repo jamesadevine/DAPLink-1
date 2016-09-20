@@ -39,5 +39,6 @@ extern __task void USBD_RTX_CDC_ACM_EP_BULKIN_Event(void);
 extern __task void USBD_RTX_CDC_ACM_EP_BULKOUT_Event(void);
 extern __task void USBD_RTX_CDC_ACM_EP_BULK_Event(void);
 
+int terminal_connected(void);
 
 #endif  /* __USBD_CDC_ACM_H__ */
