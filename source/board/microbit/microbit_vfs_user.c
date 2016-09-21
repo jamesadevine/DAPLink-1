@@ -161,13 +161,14 @@ static const FatDirectoryEntry_t test_file_entry = {
 #define BOARD_VFS_ERROR_IDX_FULL    3
 #define BOARD_VFS_ERROR_IDX_CONF    4
 
-#define MSC_SPIN_TIMEOUT            10000000
-#define USB_PROCESS_TIMEOUT_MS      100
-#define TIMEOUT_SCALAR              7
+#define MSC_SPIN_TIMEOUT            1250000
+#define USB_PROCESS_TIMEOUT_MS      200
 
 #define WINDOW_RET_ACK              1
 #define WINDOW_RET_RETRY            2
 #define WINDOW_RET_CANCEL           3
+
+#define JMX_VERSION_NUMBER          "0.0.1"
 
 void print_num(char*, int);
 
@@ -175,7 +176,7 @@ void print_num(char*, int);
 
 /*static*/ uint8_t jmx_flag = 0;
 
-#define JUNK_CLUSTER_COUNT          12
+#define JUNK_CLUSTER_COUNT          8
 
 static uint16_t junk_clusters[JUNK_CLUSTER_COUNT] = { 0 };
 static uint8_t junk_cluster_index = 0;
@@ -216,7 +217,8 @@ FileTransferState_t* fts = NULL;
 extern OS_TID main_task_id;
 extern OS_TID serial_task_id;
 
-
+extern uint32_t flash_persist_x;
+extern uint32_t flash_persist_y;
 
 char version[9];
 
@@ -239,7 +241,17 @@ int sync_jmx_state_track(char c)
 void user_putc(char c)
 {   
     uart_write_data((uint8_t*)&c,1);
-}    
+}
+
+void usb_tx_block()
+{
+    usb_tx_flag = 0;
+}
+
+void usb_tx_resume()
+{
+    usb_tx_flag = 1;
+}
 
 void jmx_packet_received(char* identifier)
 {
@@ -280,6 +292,11 @@ void initialise_req(void* data)
     }else
         board_vfs_state &= ~BOARD_VFS_STATE_INIT;
     
+    if(p->p1 > 0)
+        flash_persist_x = p->p1;
+    
+    if(p->p2 > 0)
+        flash_persist_y = p->p2;
     
     // this is a weird one, we could receive a valid jmx init packet after a boot or a flash, but also during normal operation.
     if(board_vfs_state & (BOARD_VFS_STATE_FLASH | BOARD_VFS_STATE_BOOT))
@@ -344,10 +361,17 @@ int wait_for_reply(uint8_t bit, bool shorter)
 { 
     uint8_t c = 0;
     
-    int cd = MSC_SPIN_TIMEOUT;
+    int cd = 0;
+    
+    char bits[1] = {bit};
+    
+    if(serial_task_id)
+        cd = USB_PROCESS_TIMEOUT_MS;
+    else
+        cd = MSC_SPIN_TIMEOUT;
     
     if(shorter)
-        cd = cd / TIMEOUT_SCALAR;
+       cd = cd / 2;
     
     int ret = 1;
     
@@ -361,7 +385,7 @@ int wait_for_reply(uint8_t bit, bool shorter)
     }
     
     // block for two seconds, each system interval is 10 ms
-    if(serial_task_id && os_evt_wait_or(FLAGS_JMX_PACKET, 200) == OS_R_TMO && !(jmx_flag & bit))
+    if(serial_task_id && os_evt_wait_or(FLAGS_JMX_PACKET, cd) == OS_R_TMO && !(jmx_flag & bit))
         ret = 0;
     
     os_evt_clr(FLAGS_JMX_PACKET, main_task_id);
@@ -372,16 +396,6 @@ int wait_for_reply(uint8_t bit, bool shorter)
         ret = 0;
     
     return ret;
-}
-
-void usb_tx_block()
-{
-    usb_tx_flag = 0;
-}
-
-void usb_tx_resume()
-{
-    usb_tx_flag = 1;
 }
 
 int jmx_file_request(char* filename, int size, int offset, char mode, bool status_set, int window, uint8_t* buf)
@@ -413,8 +427,10 @@ int jmx_file_request(char* filename, int size, int offset, char mode, bool statu
     jmx_send("fs", &local_fsr_send);
     
     if(status_set)
-        wait_for_reply(JMX_STATUS_PACKET, false);
-    
+    {
+        if(!wait_for_reply(JMX_STATUS_PACKET, false))
+            jmx_reset_buffer("status");
+    }
     return status.code;
 }
 
@@ -559,20 +575,19 @@ void target_get_entry(int entry, DIRRequestPacket* dir)
     
     dir->entry = -4;
     
-    wait_for_reply(JMX_DIR_PACKET, false);
+    if(!wait_for_reply(JMX_DIR_PACKET, false))
+        jmx_reset_buffer("dir");
 }
 
 void ls()
 {
     memset(microbit_page_buffer, 0, MICROBIT_PAGE_BUFFER_SIZE);
     entries_count = 0;
-    
-    // a maximum of 85 entries, allocate our cluster, add our hooks
-    vfs_create_subdir("FILES      ", BOARD_VFS_UPPER_LIMIT, board_read_subdir, board_write_subdir);
  
     DIRRequestPacket dir;
     
     bool done = false;
+    bool files_created = false;
     
     usb_tx_block();
     
@@ -581,7 +596,20 @@ void ls()
         memset(&dir,0, sizeof(DIRRequestPacket));
         target_get_entry(entries_count, &dir);
         
-        if (dir.entry < 0 || dir.size < 0)
+        // timeout
+        if(dir.entry < -1)
+            break;
+        
+        if(!files_created)
+        {
+            // a maximum of 85 entries, allocate our cluster, add our hooks
+            vfs_create_subdir("FILES      ", BOARD_VFS_UPPER_LIMIT, board_read_subdir, board_write_subdir);
+            files_created = true;
+        }
+        
+        
+        // jmx is enabled, we just have no files.
+        if (dir.entry == -1 || dir.size < 0)
             done = true;
         else
         {
@@ -652,7 +680,7 @@ void board_vfs_add_files() {
     bool short_time = !(board_vfs_state & BOARD_VFS_STATE_FLASH);
     
     if(!(board_vfs_state & BOARD_VFS_STATE_INVALID))
-        wait_for_reply(JMX_INIT_PACKET, short_time);
+        wait_for_reply(JMX_INIT_PACKET, false);
     else
     {
         reset_junk_clusters();
@@ -871,15 +899,14 @@ int board_vfs_get_size(void)
     return 64000;
 }
 
-
-
 void board_vfs_reset(void)
 {
     board_vfs_state &= ~BOARD_VFS_STATE_INIT;
     board_vfs_state |= BOARD_VFS_STATE_FLASH;
     entries_count = 0;
     
-    //uart_reset();
+    flash_persist_x = 0;
+    flash_persist_y = 0;
     
     reset_junk_clusters();
 }
@@ -1194,6 +1221,19 @@ static void board_write_subdir(uint32_t sector_offset, const uint8_t *data, uint
                     new_lw.filename[filename_offset++] = current_entry.filename[j];
             }
             
+            if(fts)
+            {
+                uart_put_tx('C');
+                
+                for(int i = 0; i < 11; i++)
+                    uart_put_tx(fts->currentEntry->filename[i]);
+                
+                uart_put_tx('\n');
+            }
+                
+            
+            uart_put_tx('N');
+            
             for(int i = 0; i < filename_offset; i++)
                 uart_put_tx(new_lw.filename[i]);
             
@@ -1249,6 +1289,8 @@ static void board_write_subdir(uint32_t sector_offset, const uint8_t *data, uint
         }
         else
         {   
+            
+            uart_put_tx('U');
             
             for(int i = 0; i < 11; i++)
                 uart_put_tx(current_entry.filename[i]);
@@ -1310,7 +1352,7 @@ static void board_write_subdir(uint32_t sector_offset, const uint8_t *data, uint
                 lw->first_cluster |= UNKNOWN_SIZE_BIT;
             
             // we are about to get a sequence of writes...
-            if(lw->size != current_entry.filesize)
+            if(lw->size != current_entry.filesize && current_entry.filesize > 0)
             {   
                 lw->size = current_entry.filesize;
                 

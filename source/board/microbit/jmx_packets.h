@@ -36,6 +36,8 @@ typedef struct JMXInitPacket_t
 {
 	int enable;
 	char v[8 + NULL_TERMINATOR];
+    int p1;
+    int p2;
 } JMXInitPacket;
 
 typedef struct RedirectPacket_t

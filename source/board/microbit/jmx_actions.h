@@ -125,7 +125,9 @@ static const JMXActionTable dirMap = {
   *	{
   *		"jmx" : {
   *			"enable": 0/1,
-  *			"v":"XX.XX.XX"
+  *			"v":"XX.XX.XX",
+  *         "p1": 123456, 
+  *         "p2": 123456 
   *		}
   *	}
   */
@@ -139,6 +141,8 @@ static const JMXActionTable initMap = {
 		//	KEY			TOKEN TYPE				STORAGE OFFSET INTO STRUCT					SIZE OF STORAGE BUFFER
 		{ "enable",		T_STATE_NUMBER,			offsetof(JMXInitPacket, enable),			member_size(JMXInitPacket, enable)	},
 		{ "v",			T_STATE_STRING,			offsetof(JMXInitPacket, v),					member_size(JMXInitPacket, v)		},
+        { "p1",			T_STATE_NUMBER,			offsetof(JMXInitPacket, p1),				member_size(JMXInitPacket, p1)		},
+        { "p2",			T_STATE_NUMBER,			offsetof(JMXInitPacket, p2),				member_size(JMXInitPacket, p2)		},
 	}
 };
 

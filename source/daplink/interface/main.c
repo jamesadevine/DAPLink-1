@@ -361,10 +361,46 @@ __task void serial_process()
         }
 
         if (len_data) {
-            //forward to target.
-            if (uart_write_data(data, len_data)) {
-                main_blink_cdc_led(MAIN_LED_OFF);
+            
+            if(board_vfs)
+            {
+                uint8_t forward[2] = {SLIP_ESC, 0};
+                
+                int forward_count = 1;
+                
+                for(int i = 0; i < len_data; i++)
+                {
+                    forward_count = 1;
+                    int ret = is_slip_character(data[i]);
+                        
+                    if(ret == END)
+                    {
+                        forward_count = 2;
+                        forward[1] = SLIP_ESC_END;
+                    } 
+                    else if(ret == ESC)
+                    {
+                        forward_count = 2;
+                        forward[1] = SLIP_ESC_ESC;
+                    }
+                    else
+                        forward[1] = data[i];
+                    
+                    if(uart_write_data(forward + (2 - forward_count), forward_count))
+                    {
+                        main_blink_cdc_led(MAIN_LED_OFF);
+                    }
+                }
+                
             }
+            else
+            {
+                //forward to target.
+                if (uart_write_data(data, len_data)) {
+                    main_blink_cdc_led(MAIN_LED_OFF);
+                }
+            }
+            
         }
     }
 }

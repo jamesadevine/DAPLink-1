@@ -91,8 +91,11 @@ void vfs_user_build_filesystem()
         vfs_create_file("FAIL    TXT", read_file_fail_txt, 0, file_size);
     }
 
+    bool error = false;
+    
     // ASSERT.TXT
     if (config_ram_get_assert(assert_buf, sizeof(assert_buf), &assert_line, &assert_source)) {
+        error = true;
         file_size = get_file_size(read_file_assert_txt);
         file_handle = vfs_create_file(assert_file, read_file_assert_txt, 0, file_size);
         vfs_file_set_attr(file_handle, (vfs_file_attr_bit_t)0); // Remove read only attribute
@@ -113,12 +116,12 @@ void vfs_user_build_filesystem()
     }
     
 #ifdef BOARD_VFS_ADD_FILES    
-    if(daplink_is_interface()) {
+    if(daplink_is_interface() && !error) {
         
         // board-specific vfs files.
         board_vfs_add_files();
-
     }
+    
 #endif
 }
 

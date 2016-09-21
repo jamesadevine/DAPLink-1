@@ -186,6 +186,7 @@ void os_tmr_call(U16 info)
 
 /*--------------------------- os_error --------------------------------------*/
 
+
 void os_error(U32 err_code)
 {
     /* This function is called when a runtime error is detected. Parameter */
@@ -207,7 +208,7 @@ void os_error(U32 err_code)
             util_assert(0);
             break;
     }
-
+    
     NVIC_SystemReset();
 
     for (;;); // Wait for reset

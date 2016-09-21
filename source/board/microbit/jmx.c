@@ -186,6 +186,31 @@ int jmx_configure_buffer(const char* identifier, void* data)
 }
 
 /**
+  * Reset the given identifiers' pointer.
+  * DOES NOT FREE, THIS IS UP TO THE CLIENT APP.
+  *
+  * @param identifier the actionTable identifier.
+  *
+  * @return STATUS_ERROR if the identifier doesn't exist, data is null, or there already is a buffer configured.
+  *			or STATUS_SUCCESS
+  */
+int jmx_reset_buffer(const char* identifier)
+{
+	int table_index = jmx_get_table_entry_index((char *)identifier, strlen(identifier));
+
+	if (table_index < 0)
+		return STATUS_ERROR;
+
+	JMXActionTable* t = (JMXActionTable*)actionStore.actionTable[table_index];
+
+	*t->pointer_base = NULL;
+
+	jmx_state &= ~J_STATE_USER_BUFFER;
+
+	return STATUS_OK;
+}
+
+/**
   *	An internal function used to configure buffers after a packet has been detected, and has been matched to an
   * appropriate JMXActionTable.
   */

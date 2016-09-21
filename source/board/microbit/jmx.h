@@ -124,6 +124,17 @@ int jmx_send(const char* identifier, void* data);
   */
 int jmx_configure_buffer(const char* identifier, void* data);
 
+/**
+  * Reset the given identifiers' pointer.
+  * DOES NOT FREE, THIS IS UP TO THE CLIENT APP.
+  *
+  * @param identifier the actionTable identifier.
+  *
+  * @return STATUS_ERROR if the identifier doesn't exist, data is null, or there already is a buffer configured.
+  *			or STATUS_SUCCESS
+  */
+int jmx_reset_buffer(const char* identifier);
+
 #ifdef __cplusplus
 }
 #endif
