@@ -191,6 +191,7 @@ static const char* microbit_board_errors[4] = {
     "I don't what was wrong with me, but I feel better now :)"
 };
 
+static const char file_not_found[] = ":(";
 
 
 typedef struct LWDirectoryEntry
@@ -222,21 +223,9 @@ extern uint32_t flash_persist_y;
 
 char version[9];
 
-OS_MUT jmx_mutex;
-
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-int sync_jmx_state_track(char c)
-{
-    os_mut_wait(&jmx_mutex, 0xFFFF);
-    
-    int ret = jmx_state_track(c);
-    
-    os_mut_release(&jmx_mutex);
-    return ret;
-}
 
 void user_putc(char c)
 {   
@@ -255,7 +244,6 @@ void usb_tx_resume()
 
 void jmx_packet_received(char* identifier)
 {
-    char ident[3] = {identifier[0],identifier[1],identifier[2]};
     
     if(strcmp(identifier, "status") == 0)
         jmx_flag |= JMX_STATUS_PACKET;
@@ -288,7 +276,7 @@ void initialise_req(void* data)
     if(p->enable)
     {
         board_vfs_state |= BOARD_VFS_STATE_INIT;
-        memcpy(version, p->v, 9);
+        strncpy(version, p->v, 9);
     }else
         board_vfs_state &= ~BOARD_VFS_STATE_INIT;
     
@@ -363,8 +351,6 @@ int wait_for_reply(uint8_t bit, bool shorter)
     
     int cd = 0;
     
-    char bits[1] = {bit};
-    
     if(serial_task_id)
         cd = USB_PROCESS_TIMEOUT_MS;
     else
@@ -431,6 +417,7 @@ int jmx_file_request(char* filename, int size, int offset, char mode, bool statu
         if(!wait_for_reply(JMX_STATUS_PACKET, false))
             jmx_reset_buffer("status");
     }
+    
     return status.code;
 }
 
@@ -444,13 +431,12 @@ int target_get_file(char* filename, int size, int offset, uint8_t* buf)
     
     usb_tx_resume();
     
-    /*print_num("RESULT ", ret);
-    
-    print_num("READ", size);
-    print_num("OFFSET", offset);*/
     
     if(ret == MICROBIT_JMX_SUCCESS)
         return size;
+    
+    if(offset == 0)
+        strcpy((char *)buf, file_not_found);
     
     return 0;
 }
@@ -474,7 +460,6 @@ int target_write_buf(char* filename, int size, int offset, uint8_t* buf)
         
         while(byte_count < size)
         {
-            
             int tx_size = MIN(EFFECTIVE_BUFF_SIZE, size - byte_count);
             
             memset(tx_buf,0,TOTAL_BUFFER_SIZE);
@@ -636,9 +621,6 @@ void sync_init()
     jmx_init();
     swd_init();
     
-    //initialise our mutex, incase our thread is paged out.
-    os_mut_init(&jmx_mutex);
-    
     //reset our state bits, but not our error indicator.
     board_vfs_state &= ~0x0F;
     entries_count = 0;
@@ -677,10 +659,11 @@ void board_vfs_add_files() {
         first_init = true;
     }
     
-    bool short_time = !(board_vfs_state & BOARD_VFS_STATE_FLASH);
+    if(board_vfs_state & BOARD_VFS_STATE_FLASH)
+        wait_for_reply(JMX_INIT_PACKET, true);
     
-    if(!(board_vfs_state & BOARD_VFS_STATE_INVALID))
-        wait_for_reply(JMX_INIT_PACKET, false);
+    if(!(board_vfs_state & BOARD_VFS_STATE_INVALID) && !(board_vfs_state & BOARD_VFS_STATE_INIT))
+        wait_for_reply(JMX_INIT_PACKET, true);
     else
     {
         reset_junk_clusters();
@@ -991,9 +974,6 @@ int board_vfs_write(uint32_t requested_sector, uint8_t *buf, uint32_t num_sector
     
     //calculates the cluster offset into our file system
     int microbit_fs_off = (requested_sector - total_vfs_sectors) / 8;
-    
-    //calculates the block offset into the file
-    int microbit_block_offset = (requested_sector - total_vfs_sectors) % 8;
 
     LWDirectoryEntry_t* entry = NULL;
     
@@ -1138,11 +1118,8 @@ int board_vfs_write(uint32_t requested_sector, uint8_t *buf, uint32_t num_sector
 
 static void board_write_subdir(uint32_t sector_offset, const uint8_t *data, uint32_t num_sectors){
     FatDirectoryEntry_t *new_entry = (FatDirectoryEntry_t *)data;
-   
-    uint32_t dirs_per_sector = VFS_SECTOR_SIZE / sizeof(FatDirectoryEntry_t); 
 
     int entry_offset = 0;//dirs_per_sector * sector_offset;
-    
     
     if(entry_offset == 0)
         valid_dirents = 0;

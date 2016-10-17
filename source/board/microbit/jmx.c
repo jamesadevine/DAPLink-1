@@ -440,6 +440,18 @@ int jmx_parse(char c)
 						// if the state is T_STATE_DYNAMIC_STRING, the action's buffer size is actually an index into the action table.
 						if (a->buffer_size > JMX_ACTION_COUNT)
 							return jmx_reset(true);
+                        
+                        // #HACK
+                        // this is a small hack, we could enter a state where we expect bytes in response and assume the returned code
+                        // is always valid. Here we check against the value of action[0], which is the only instance of a BUFFERED STREAM
+                        if(t->actions[0].type == T_STATE_NUMBER)
+                        {
+                            int* valid = (int *)((uint8_t*)*t->pointer_base + t->actions[0].offset);
+                        
+                            if(*valid < 0)
+                                return jmx_reset(false);
+                        }
+                        
 
 						JMXActionItem* dependency = &t->actions[a->buffer_size];
 

@@ -242,12 +242,8 @@ int get_fat_entry(uint32_t cluster)
 {
     uint32_t low_idx;
     uint32_t high_idx;
-    uint8_t low_data;
-    uint8_t high_data;
     low_idx = cluster * 3 / 2;
     high_idx = cluster * 3 / 2 + 1;
-    
-    int ret = 0;
     
     // Assert that this is still within the fat table
     if (high_idx >= ELEMENTS_IN_ARRAY(fat.f)) {

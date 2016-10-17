@@ -179,13 +179,15 @@ const JMXActionTable redirectMap = {
 const JMXActionTable statusMap = {
 	BUFFERED_ACTION,
 	"status",
-	sizeof(StatusPacket),	// struct size
+	sizeof(StatusPacket),	    // struct size
 	(void **)&jmx_status_p,		// pointer base
-	nop,			// result function pointer
+	nop,			            // result function pointer
 	{
-		//	KEY			TOKEN TYPE				STORAGE OFFSET INTO STRUCT			SIZE OF STORAGE BUFFER
+        // DO NOT REJIG THIS ACTION TABLE, SEE #HACK in jmx.c
+		// KEY			TOKEN TYPE				STORAGE OFFSET INTO STRUCT			SIZE OF STORAGE BUFFER
 		{ "code",		T_STATE_NUMBER,			offsetof(StatusPacket, code),		member_size(StatusPacket, code)		},
 		{ "window",		T_STATE_NUMBER,			offsetof(StatusPacket, window),		member_size(StatusPacket, window)	},
+        //	KEY			TOKEN TYPE				STORAGE OFFSET INTO STRUCT			DEPENDENT ON VALUE OF "window"
 		{ NULL,			T_STATE_STREAM_BUFFER,	offsetof(StatusPacket, receipt),	1									}
 	}
 };

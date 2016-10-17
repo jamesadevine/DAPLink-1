@@ -157,12 +157,14 @@ os_mbx_declare(serial_mailbox, 20);
 static uint8_t data[SIZE_DATA];
 
 extern void jmx_packet_received(char*);
-int jmx_result = -1;
+
 
 __task void serial_process()
 {
     UART_Configuration config;
     int32_t len_data = 0;
+    int jmx_result = -1;
+    int jmx_prev = -1;
     void *msg;
 
     uint8_t board_vfs = board_vfs_enabled();
@@ -234,11 +236,13 @@ __task void serial_process()
         {
             while(read_count < SIZE_DATA && uart_read_data(&c,1))
             {
+                jmx_prev = jmx_result;
+                
                 char characters[2] = {jmx_previous(), c};
                 
                 jmx_result = jmx_state_track(c);
                 
-                if(characters[0] == SLIP_ESC && (characters[1] == 'A' || characters[1] == 'R' || characters[1] == 'C'))
+                if(jmx_prev != 0 && characters[0] == SLIP_ESC && (characters[1] == 'A' || characters[1] == 'R' || characters[1] == 'C'))
                 {
                     if(characters[1] == 'A')
                         jmx_packet_received("stat_ack");
