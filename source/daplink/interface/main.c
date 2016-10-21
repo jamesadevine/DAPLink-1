@@ -412,8 +412,14 @@ __task void serial_process()
 extern __task void hid_process(void);
 __attribute__((weak)) void prerun_target_config(void) {}
 
+
+extern UART_Configuration init_config;
+
 __task void main_task(void)
 {
+    uart_initialize();
+    uart_set_configuration((UART_Configuration*)&init_config);
+
     // State processing
     uint16_t flags = 0;
     // LED

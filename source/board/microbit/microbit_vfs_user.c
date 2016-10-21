@@ -61,7 +61,7 @@
 #define FILE_FRAGEMENTED_BIT        0x4000
 
 
-static const UART_Configuration init_config = {
+const UART_Configuration init_config = {
     .Baudrate = 115200,
     .DataBits = UART_DATA_BITS_8,
     .Parity = UART_PARITY_NONE,
@@ -616,31 +616,6 @@ void ls()
     usb_tx_resume();
 }
 
-void sync_init()
-{
-    jmx_init();
-    swd_init();
-    
-    //reset our state bits, but not our error indicator.
-    board_vfs_state &= ~0x0F;
-    entries_count = 0;
-    
-    //reset the microbit, setup the initalisation of UART
-    target_set_state(RESET_HOLD);
-    uart_initialize();
-    uart_set_configuration((UART_Configuration*)&init_config);
-    uart_clear_rx();
-    target_set_state(RESET_RUN);
-    swd_off();
-    
-    main_blink_cdc_led(MAIN_LED_OFF);
-    
-#ifndef TARGET_FLASH_ERASE_CHIP_OVERRIDE
-    memset(tx_rx_buffer, 0, BUFF_SIZE);
-    vfs_create_file("RXTX    TXT", read_tx_rx_buff, 0, BUFF_SIZE);
-#endif   
-}
-
 /**
   * called in vfs_user.c: vfs_build().
   *
@@ -655,7 +630,9 @@ void board_vfs_add_files() {
     // this is the first entrance, we have to reset the target, and synchronously read.
     if(board_vfs_state & BOARD_VFS_STATE_BOOT)
     {
-        sync_init();
+        jmx_init();
+        board_vfs_state &= ~0x0F;
+        entries_count = 0;
         first_init = true;
     }
     
